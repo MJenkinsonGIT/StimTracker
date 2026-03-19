@@ -12,5 +12,5 @@ internal-mir/
 *.prg
 *.prg.debug.xml
 *.iq
-PLAN.md
-Untitled.txt
+/PLAN.md
+/Untitled.txt
