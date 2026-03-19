@@ -1,0 +1,18 @@
+
+Settings screen - Use the smallest font. I see a down arrow at the bottom (Replace it with a polygon fill arrow) but I can't scroll down. Add a little more space between the name and the current setting selection so they don't overlap. 
+
+Setting Adjust (After clicking ont he setting in the setting menu). Apply the Cancel (Down Arrow) formatting like what we used in the CustomHRV app. Move 'Save' up a tad to fit over the green box.
+
+Bed Time - change the bed time setting input from minutes past midnight to hh:mm. Put separate up and down arrows on top of and below the minutes and Hours and allow the user to scroll up and down to change them.
+
+Oops menu - reformat cancel (swipe down) to the gray bar / white text / polygon fill arrow layout previously mentioned.Move the set this as your warning threshold lines up a bit so they don't overlap, and resize the red button so that set threshold fits neatly on it.
+
+Functions
+
+Stimulant Screen: Add the ability to modify the stimulant profile - the screen to access it would be accessed by holding back. The name, dosage, etc can be changed here. The profile can also be deleted.
+
+History - When I click on an entry, it crashes. 
+
+'Adjust Time'. When choosing adjust time when logging a stimulant, replace the current system with a page that has you set a start time and end time. Have two sets of hh:mm with up and down arrows on top and bottom,allow the user to scroll up and down to set them. Default starting time should be the current time. I want a start and an end time, beause people consume drinks over time rather than instantly. Divide the caffeine content by the numbewr of minutes, and apply that amount at each minute in he window. I.E. a 120mg drink with start time 5pm and end time 5:30pm would be 4mg at 5:01, 5:02, 5:03 etc up to 5:30.
+
+Pill vs drink - Each stimulant profile should have an option to specify if its a pill or a drink. We need to do research on how quickly it makes it into your system in pill form, and how quickly in drink form. Then, apply those delays to the time it was logged to determine when it actually makes it into your system - so more of a lag for the pills, but fatser onset for the drinks. 
