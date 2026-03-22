@@ -143,7 +143,7 @@ When a dose is logged with a Start and Finish time using the recording flow, Sta
 *During the drinking window* (`0 ≤ t ≤ T`):
 ```
 A(t) = (R / ke) × (1 − e^(−ke×t))
-     − (R × ka) / (ke × (ka − ke)) × (e^(−ke×t) − e^(−ka×t))
+     − R / (ka − ke) × (e^(−ke×t) − e^(−ka×t))
 ```
 
 *After the drinking window ends* (`t > T`):

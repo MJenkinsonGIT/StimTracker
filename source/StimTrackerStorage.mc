@@ -468,7 +468,7 @@ class StimTrackerStorage {
             var ke_d = Math.pow(0.5, tHours * ke / ln2).toFloat();
             var ka_d = Math.pow(0.5, tHours * ka / ln2).toFloat();
             var result = (R / ke) * (1.0f - ke_d)
-                       - (R * ka) / (ke * (ka - ke)) * (ke_d - ka_d);
+                       - R / (ka - ke) * (ke_d - ka_d);
             if (result < 0.0f) { result = 0.0f; }
             return result;
         }
@@ -478,7 +478,7 @@ class StimTrackerStorage {
         var ka_T    = Math.pow(0.5, T * ka / ln2).toFloat();
         var A_gut_T = (R / ka) * (1.0f - ka_T);
         var A_bdy_T = (R / ke) * (1.0f - ke_T)
-                    - (R * ka) / (ke * (ka - ke)) * (ke_T - ka_T);
+                    - R / (ka - ke) * (ke_T - ka_T);
         if (A_bdy_T < 0.0f) { A_bdy_T = 0.0f; }
 
         var dt    = tHours - T;

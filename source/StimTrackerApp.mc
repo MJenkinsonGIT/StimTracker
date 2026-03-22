@@ -6,6 +6,8 @@
 //   - NEVER annotate the AppBase class itself
 
 import Toybox.Application;
+import Toybox.Background;
+import Toybox.Complications;
 import Toybox.Graphics;
 import Toybox.Lang;
 import Toybox.Math;
@@ -14,6 +16,7 @@ import Toybox.Time;
 import Toybox.Time.Gregorian;
 import Toybox.WatchUi;
 
+(:background)
 class StimTrackerApp extends Application.AppBase {
 
     function initialize() {
@@ -29,6 +32,53 @@ class StimTrackerApp extends Application.AppBase {
         }
         // Pre-load settings (initialises defaults on first run)
         StimTrackerStorage.loadSettings();
+        // Push fresh complication data immediately when the app opens
+        _pushComplication();
+        // Ensure a background temporal event is scheduled for periodic updates
+        _scheduleBackground();
+    }
+
+    // Wire up the background service delegate so the system can launch it
+    // periodically to push complication updates without the app being open.
+    function getServiceDelegate() as [System.ServiceDelegate] {
+        return [new StimTrackerServiceDelegate()];
+    }
+
+    // Push current caffeine-in-system to the complication from the foreground.
+    // Called on app open so Face It has a fresh value immediately.
+    private function _pushComplication() as Void {
+        var settings  = StimTrackerStorage.loadSettings();
+        var currentMg = StimTrackerStorage.calcCurrentMg(settings);
+        try {
+            Complications.updateComplication(0, {
+                :value => currentMg.toNumber(),
+                :unit  => "mg"
+            } as Complications.Data);
+        } catch (e) {
+            // Complication not subscribed — ignore.
+        }
+    }
+
+    // Register a temporal background event to fire 5 minutes from the last
+    // event (or immediately if none has run yet). The service delegate will
+    // reschedule itself on each firing.
+    private function _scheduleBackground() as Void {
+        var fiveMin  = new Time.Duration(5 * 60);
+        var lastTime = Background.getLastTemporalEventTime();
+        var nextTime;
+        if (lastTime != null) {
+            nextTime = lastTime.add(fiveMin);
+        } else {
+            nextTime = Time.now();
+        }
+        try {
+            Background.registerForTemporalEvent(nextTime);
+        } catch (e instanceof Background.InvalidBackgroundTimeException) {
+            // Ran too recently — schedule 5 min from now.
+            try {
+                Background.registerForTemporalEvent(Time.now().add(fiveMin));
+            } catch (e2) { }
+        }
     }
 
     function getInitialView() as [WatchUi.Views] or [WatchUi.Views, WatchUi.InputDelegates] {
@@ -210,14 +260,14 @@ class StimGlanceView extends WatchUi.GlanceView {
                                 var ke_d = Math.pow(0.5, elapsedStartHrs * glanceKe / ln2).toFloat();
                                 var ka_d = Math.pow(0.5, elapsedStartHrs * ka       / ln2).toFloat();
                                 remaining = (R / glanceKe) * (1.0f - ke_d)
-                                          - (R * ka) / (glanceKe * (ka - glanceKe)) * (ke_d - ka_d);
+                                          - R / (ka - glanceKe) * (ke_d - ka_d);
                                 if (remaining < 0.0f) { remaining = 0.0f; }
                             } else {
                                 var ke_T    = Math.pow(0.5, T * glanceKe / ln2).toFloat();
                                 var ka_T    = Math.pow(0.5, T * ka       / ln2).toFloat();
                                 var A_gut_T = (R / ka) * (1.0f - ka_T);
                                 var A_bdy_T = (R / glanceKe) * (1.0f - ke_T)
-                                            - (R * ka) / (glanceKe * (ka - glanceKe)) * (ke_T - ka_T);
+                                            - R / (ka - glanceKe) * (ke_T - ka_T);
                                 if (A_bdy_T < 0.0f) { A_bdy_T = 0.0f; }
                                 var dt    = elapsedStartHrs - T;
                                 var ke_dt = Math.pow(0.5, dt * glanceKe / ln2).toFloat();
