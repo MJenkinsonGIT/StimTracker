@@ -1,9 +1,14 @@
 # StimTracker — App Planning Document
 
-> **Status:** Active development — UI polish complete, pending device testing
+> **Status:** Active development — PK absorption model + gear/button UI implemented, pending full device testing
 > **Last updated:** March 2026
 > **Note:** This is a working document — not the knowledge base. It contains research notes,
 > decisions in progress, and future plans. Nothing here should be treated as tested or authoritative.
+>
+> **Implementation status summary (March 2026):**
+> - §15 Absorption model: IMPLEMENTED (Phases A–E complete — storage engine, glance mirror, settings UI, params screens, per-dose food state). Pending device verification of PK behaviour (§17).
+> - §16 Dose parameters / gear icon pattern: IMPLEMENTED. Gear icon is a PNG asset (`gear_icon.png`), not a drawn IconUtils module. All params screens live in `ParamsViews.mc`. KEY_ENTER (not KEY_MENU) confirmed as the correct top-button constant on physical Venu 3. Device-confirmed: gear size good, KEY_ENTER working, hitbox ordering correct.
+> - §17 Testing checklist: PENDING — run after first device build with absorption model active.
 
 ---
 
@@ -66,7 +71,7 @@ consumption throughout the day. Core value propositions:
 |---------|---------|----------|--------|
 | Reign Red Dragon (can) | 16 fl oz | 300mg | confirmed from label |
 | G Fuel Blue Ice (powder) | 1 scoop (7g) | 150mg | confirmed from label |
-| Great Value Energy Cherry Slush (can) | 16 fl oz | 200mg | confirmed from label |
+| Great Value Energy Cherry Slush (can) | 16 fl oz | 120mg | confirmed from label |
 | Nutricost Caffeine + L-Theanine (capsule) | 1 capsule | 200mg | confirmed from label |
 | Nutricost Energy Complex (capsule) | 1 serving | 100mg | confirmed (front label) |
 | Nutricost Clean Energy Powder | 1 scoop | 100mg | confirmed |
@@ -98,7 +103,7 @@ consumption throughout the day. Core value propositions:
   Adenosine-5-Triphosphate Disodium (ATP)
 
 **Great Value Energy Cherry Slush (16 fl oz can)**
-- Caffeine: 200mg
+- Caffeine: 120mg
 - Niacin (B3): TBD
 - Vitamin B6: TBD
 - Vitamin B12: TBD
@@ -228,6 +233,7 @@ saturation + sympathetic nervous system activation.
 - Smaller: "Below Sleep Threshold: HH:MMpm" or "Below Sleep Threshold: Now"
 - Coloured arc/bar: today total vs limit (green → amber → red)
 - Small Oops button (corner, distinct colour)
+- Gear icon (top-right) → Settings
 
 **Log Stimulant Screen** — scrollable profile list
 - Each row: stimulant name + caffeine mg
@@ -237,7 +243,7 @@ saturation + sympathetic nervous system activation.
 
 **Add Stimulant Screen** — name + caffeine mg entry, Save → back to list
 
-**Edit Stimulant Screen** — same layout as Add, pre-populated. Save / Cancel.
+**Edit Stimulant Screen** — same layout as Add, pre-populated. Save / Cancel. Gear → Profile Params.
 
 **Preview / Confirm Screen** — shown after tapping a profile
 - Drink name + mg being added
@@ -246,12 +252,13 @@ saturation + sympathetic nervous system activation.
 - Updated "Below Sleep Threshold" time
 - Warning banner if Oops threshold or daily limit would be exceeded
 - [Log It] button → logs with current timestamp → back to Main
-- [Adjust Time] → Backdate Screen (then returns here with recalculated preview)
+- [Dose Options] → Dose Options Screen (timing + food state; returns here with recalculated preview)
 - Swipe DOWN → cancel, back to Log Stimulant
 
-**Backdate Screen** — "How long ago?"
-- Options: Just now / 15 min / 30 min / 1 hr / 2 hrs / Custom
-- Tap → return to Preview with adjusted timestamp
+**Dose Options Screen** (formerly "Adjust Time")
+- Start/Finish time pickers
+- Food state selector (Precision mode only)
+- Save / Start Recording
 
 **History Screen** — 30-day list, most recent first
 - One row per day: date, total mg, dose count
@@ -274,6 +281,8 @@ saturation + sympathetic nervous system activation.
 - Sleep threshold mg (default 100mg)
 - Bedtime (pre-populated from Garmin profile, adjustable)
 - Oops threshold (current value or "Not set")
+- Absorption Model (Instant / Standard / Precision)
+- Standard Food State (sub-setting, Standard mode only)
 - Reset today's log (destructive, requires confirmation)
 
 ### Navigation Map
@@ -285,26 +294,28 @@ GLANCE
 Main
   ├─ swipe UP  ────────────────────────────────────► Log Stimulant
   ├─ swipe DOWN ───────────────────────────────────► History
-  ├─ menu button ──────────────────────────────────► Settings
+  ├─ tap gear icon / top button (KEY_ENTER) ───────► Settings
   └─ tap Oops ─────────────────────────────────────► Oops Screen
        └─ confirm/cancel ───────────────────────────► Main
 
 Log Stimulant
   ├─ tap profile ──────────────────────────────────► Preview/Confirm
   │    ├─ tap [Log It] ────────────────────────────► Main
-  │    ├─ tap [Adjust Time] ──────────────────────► Backdate
-  │    │    └─ tap option ──────────────────────────► Preview/Confirm
+  │    ├─ tap [Dose Options] ──────────────────► Dose Options Screen
+  │    │    └─ back/save ───────────────────────────► Preview/Confirm
   │    └─ swipe DOWN ──────────────────────────────► Log Stimulant
   ├─ long-press profile ───────────────────────────► Edit / Delete menu
   │    ├─ Edit ────────────────────────────────────► Edit Stimulant Screen
-  │    │    └─ Save/Cancel ──────────────────────────► Log Stimulant
+  │    │    ├─ Save/Cancel ───────────────────────────► Log Stimulant
+  │    │    └─ gear / KEY_ENTER ───────────────────► Profile Params Screen
   │    └─ Delete (confirm) ───────────────────────► Log Stimulant
   └─ tap [+ Add New Stimulant] ────────────────────► Add Stimulant Screen
        └─ Save/Cancel ──────────────────────────────► Log Stimulant
 
 History
   ├─ tap day ──────────────────────────────────────► Day Detail
-  │    └─ swipe DOWN ──────────────────────────────► History
+  │    ├─ swipe DOWN ──────────────────────────────► History
+  │    └─ gear / KEY_ENTER ────────────────────────► Dose Params Screen
   └─ swipe DOWN ───────────────────────────────────► Main
 
 Settings
@@ -313,40 +324,88 @@ Settings
 
 ---
 
-## 9. Data Model (Draft — Phase 1)
+## 9. Data Model (as implemented — Phase 1 + absorption model)
 
 ```
 Storage keys:
-  "settings"  → { limitMg, halfLifeHrs, sleepThresholdMg, bedtimeHour, bedtimeMinute,
-                   bodyWeightKg, oopsThresholdMg }
-  "profiles"  → Array of { id, name, caffeineMg }
-  "log_YYYYMMDD" → Array of { profileId, timestampMs, caffeineMg } (one key per day)
-  "log_days"  → Array of date strings stored (for enumeration / pruning)
+  "settings"    → { limitMg, halfLifeHrs, sleepThresholdMg, bedtimeHour, bedtimeMinute,
+                     bodyWeightKg, oopsThresholdMg,
+                     absorptionModel,      // 0=Instant, 1=Standard, 2=Precision (default 0)
+                     standardFoodState }   // 0=Fasted, 1=Typical, 2=WithFood (default 1)
+
+  "profiles"    → Array of { id, name, caffeineMg,
+                              type }       // "drink" | "pill" (default "drink" if absent)
+
+  "log_YYYYMMDD" → Array of {
+                     name,          // snapshot of profile name at log time
+                     caffeineMg,    // snapshot of caffeine amount
+                     profileId,     // stored but unused at display time
+                     startSec,      // Unix epoch seconds (was timestampSec for instant doses)
+                     finishSec,     // = startSec for instant doses; > startSec for window doses
+                     type,          // "drink" | "pill" (default "drink" if absent — migration)
+                     foodState }    // 0=Fasted, 1=Typical, 2=WithFood (default 1 if absent)
+
+  "log_days"    → Array of date strings stored (for enumeration / pruning)
 ```
 
+**Migration notes (old log entries):**
+- `timestampSec` absent but `startSec` present → use `startSec` / `finishSec` (new format)
+- `timestampSec` present, `startSec` absent → treat as instant dose: `startSec = finishSec = timestampSec`
+- `type` absent → treat as `"drink"`
+- `foodState` absent → treat as `1` (Typical)
+
 Memory budget estimate (conservative):
-- Settings: ~200 bytes
-- 10 profiles: ~500 bytes
-- 90 days × 5 events/day × 50 bytes = ~22.5KB
+- Settings: ~300 bytes (extended fields)
+- 10 profiles: ~600 bytes (with type field)
+- 90 days × 5 events/day × 80 bytes = ~36KB
 - Total: well within 128KB Storage limit
 
 ---
 
-## 10. Build Notes (Pre-development)
+## 10. Source File Map (as built)
 
-- App type: `watch-app` (not widget, not data field)
-- Glance: implement `getGlanceView()` + `(:glance)` annotations per skin_temp_widget_development_lessons.md §21
-- No special permissions required for Application.Storage (confirmed in KB)
-- Time handling: use `System.getClockTime()` for local time (NOT `Gregorian.moment()` which is UTC)
-- Half-life formula: `remaining = dose × 0.5^(elapsedHours / halfLifeHours)`
-- For multiple doses: sum of all active doses' remaining amounts
+```
+source/
+  StimTrackerApp.mc       — App + GlanceView (inline PK decay loop mirrors StimTrackerStorage)
+  StimTrackerStorage.mc   — All storage I/O + PK engine (calcCurrentMg, calcAbsorbedMg, getKa)
+  MainView.mc             — MainView + MainDelegate (gear icon, KEY_ENTER, Oops button)
+  LogStimulantView.mc     — LogStimulantView + LogStimulantDelegate (scrollable profile list)
+  EditStimulantView.mc    — EditStimulantView + Delegate (Add/Edit profile; gear → ProfileParamsView)
+  PreviewView.mc          — PreviewView + Delegate (dose preview + food state button in Precision)
+                            ProfileEditView + Delegate (name/caffeine/type edit, accessed via long-press)
+  HistoryView.mc          — HistoryView + Delegate; DayDetailView + Delegate
+  SettingsView.mc         — SettingsView + Delegate (scrollable settings including absorptionModel)
+                            ValueEditView + Delegate (generic numeric editor)
+                            BedtimeEditView + Delegate (HH:MM swipe picker)
+  ParamsViews.mc          — DoseParamsView/Delegate, ProfileParamsView/Delegate,
+                            MiscParamsView/Delegate, and shared Dose Form / Food State sub-screens
+  OopsView.mc             — OopsView + Delegate
+  ArrowUtils.mc           — Polygon-drawn arrow utilities (up/down arrows, hint arrows)
+
+resources/
+  drawables/
+    drawables.xml         — Registers all bitmap assets
+    gear_icon.png         — 56×56 gear icon (generated at 448px, downsampled with LANCZOS)
+    launcher_icon.png     — App launcher icon
+    oops_heart.png        — Heart icon for Oops button
+    complication_icon.svg — Complication icon
+    Cover Image.png       — Store cover image
+  strings/
+    strings.xml           — String resources
+  complications/
+    (complication layout files)
+```
+
+**Removed vs. original plan:** `IconUtils.mc` was planned but not created — the gear icon is a
+PNG asset instead of a drawn module.
 
 ---
 
-## 11. UI Polish Session — March 2026 (Simulator-confirmed, device testing pending)
+## 11. UI Polish Session — March 2026 (DEVICE-CONFIRMED)
 
-All screens converted to `FONT_XTINY` and consistent layout conventions. Simulator builds and
-navigates correctly. Pending real-device test before closing.
+All screens converted to `FONT_XTINY` and consistent layout conventions. Device-confirmed
+working. Main footer bars updated: "Hold Back=Settings" bar removed; gear icon + KEY_ENTER
+replaces it (see §16).
 
 ### Screens completed
 
@@ -354,19 +413,19 @@ navigates correctly. Pending real-device test before closing.
 - Caffeine line (grey) drawn first at y=42; name (white) below via `_drawWrappedName()`
 - Name word-wrap: if >22 chars, split at last space at/before char 22; both lines centred 22px apart
 - Warning banner at y=106
-- “After this:” section base at y=141 with 30px inter-line spacing
-- “Sleep safe: X” replaced with “Below Sleep Threshold: X”; “Just now” replaced with “Now”
+- "After this:" section base at y=141 with 30px inter-line spacing
+- "Sleep safe: X" replaced with "Below Sleep Threshold: X"; "Just now" replaced with "Now"
 - Log It: green `fillRoundedRectangle`, y=268, h=38
-- Adjust Time: red `fillRoundedRectangle`, y=312, h=38
+- Dose Options: red `fillRoundedRectangle`, y=312, h=38 (button label renamed from "Adjust Time")
 - Hold Back=Profile bar: circle-clipped dark grey at y=355, h=27
 - `onMenu()` in `PreviewDelegate` fires on long-press back → pushes `ProfileEditView`
 
 **Profile Edit screen** (`ProfileEditView` in `PreviewView.mc`)
-- Title: green “Edit Profile”, `FONT_XTINY`
+- Title: green "Edit Profile", `FONT_XTINY`
 - Name tap → TextPicker; caffeine +/− with `FONT_NUMBER_MEDIUM` value
 - Save (green): updates storage + refreshes `PreviewView` and `LogStimulantView` list
 - Delete (dark red): confirmation dialog, pops back 3 levels to log list
-- Cancel bar: full-width `#333333` at y=380 with down arrow and “Cancel” text
+- Cancel bar: full-width `#333333` at y=380 with down arrow and "Cancel" text
 
 **Settings screen** (`SettingsView.mc`)
 - All text `FONT_XTINY`; title green at y=28
@@ -382,10 +441,10 @@ navigates correctly. Pending real-device test before closing.
 - `ValueEditDelegate` receives view as constructor argument
 
 **Main screen footer bars** (`MainView.mc`)
-- Two circle-clipped dark grey bars using `_fillCircularBar()` with arc radius 210
-- Bar 1 (Settings hint): y=355, h=27, text centred at y=368
-- Bar 2 (Log/History): y=384, h=27, text centred at y=397
-- 2px gap between bars
+- ~~Two~~ One circle-clipped dark grey bar using `_fillCircularBar()` with arc radius 210
+- ~~Bar 1 (Settings hint): y=355, h=27, text centred at y=368~~ — **REMOVED**: replaced by gear icon + KEY_ENTER (see §16)
+- Bar 2 (Log/History): y=384, h=27, text centred at y=397 — **remains**
+- Gear icon drawn at approximately x=395, y=100 (top-right, inside circular boundary — see §16 for safe-zone details)
 
 **History / DayDetail / LogStimulant / EditStimulant** — completed in prior session;
   see session summary at top of this file / transcript.
@@ -393,7 +452,8 @@ navigates correctly. Pending real-device test before closing.
 ### Navigation finalised
 
 - All secondary screens: back button exits, swipes scroll within screen
-- `onMenu()` = hold back button (Garmin standard for secondary long-press action)
+- `onMenu()` = long-press of the back/ESC button (NOT the top button — see §16 and PK-3)
+- **Top button (physical "MENU" label) = KEY_ENTER** — used to open params/settings screens across all views
 - Settings: back exits, swipes scroll
 - Preview: back exits, hold-back → Profile Edit
 - Profile Edit: back cancels, Save commits
@@ -459,13 +519,7 @@ that means doses older than 35 hours drop out of the calculation automatically.
 
 ### What We're Simplifying (and Why It's Still Good)
 
-**Absorption delay** — In reality caffeine is not instantly in your bloodstream. After oral
-ingestion, 99% is absorbed within 45 minutes, with peak plasma concentration occurring between
-15 and 120 minutes after consumption depending on whether you had food, individual gastric
-emptying speed, and other factors. Our model assumes **instant absorption** — the full dose is
-in your system from the moment you log it. The practical consequence is that our estimate runs
-*slightly high* in the first 30–60 minutes after a dose, then becomes accurate as absorption
-actually catches up to the instantaneous assumption.
+**Absorption delay** — ~~In reality caffeine is not instantly in your bloodstream.~~ The original instant-absorption assumption has been superseded by the absorption model in §15. With `absorptionModel=0` (Instant, the default), the original behaviour is preserved for backwards compatibility. With Standard or Precision mode enabled, the app uses a one-compartment first-order absorption + elimination model — see §15 for full details.
 
 The academic app Caffeine Zone (Ritter & Yeh, Penn State, 2011) modelled both absorption and
 elimination as separate exponentials (absorption half-life ~7 minutes), which is more correct
@@ -531,7 +585,7 @@ the same.
 |--------|-------------|----------|
 | Elimination kinetics | First-order single-compartment | Scientifically correct |
 | Multi-dose superposition | Sum of independent decays | Correct |
-| Absorption | Instant (no delay modelled) | Slight overestimate in first hour |
+| Absorption | Instant (mode 0) or one-compartment PK (modes 1–2) | Mode 0: slight overestimate in first hour; modes 1–2: accurate curve |
 | Half-life default | 5.0 hrs | Good population average |
 | Half-life personalisation | User-configurable | Correct approach |
 | Paraxanthine metabolite | Not modelled | Known underestimate at 8–15h mark |
@@ -556,7 +610,7 @@ calibrates the threshold to their actual response, regardless of what the underl
 
 **Problem:** When `pushView(new MyView(), new MyDelegate(), ...)` is called with the delegate
 creating its own private view internally, `onUpdate()` fires on the pushed view but all delegate
-methods that call view functions operate on the delegate’s private copy. Visual updates never
+methods that call view functions operate on the delegate's private copy. Visual updates never
 appear; swipe-triggered scrolls and data changes silently affect an invisible ghost object.
 
 **Fix:** Always create the view first, pass it to both `pushView()` and the delegate constructor.
@@ -566,7 +620,7 @@ appear; swipe-triggered scrolls and data changes silently affect an invisible gh
 var myView = new MyView(data);
 WatchUi.pushView(myView, new MyDelegate(myView, data), WatchUi.SLIDE_UP);
 
-// BROKEN — delegate’s internal new MyView() is a ghost
+// BROKEN — delegate's internal new MyView() is a ghost
 WatchUi.pushView(new MyView(data), new MyDelegate(data), WatchUi.SLIDE_UP);
 ```
 
@@ -595,12 +649,23 @@ var line2;
 This is already documented in the KB under `monkey_c_lessons.md` — confirm same entry applies
 and cross-reference if needed.
 
-### PK-3 — `onMenu()` fires on long-press of the back button
+### PK-3 — `onMenu()` fires on long-press of the ESC (back) button; top button is KEY_ENTER
 
-`BehaviorDelegate.onMenu()` is triggered by a long-press of the physical back/menu button on
-Venu 3 (and other Garmin devices). This can be used as a “hold back = secondary action”
-pattern with a labelled hint bar at the bottom of the screen. The short back press still fires
-`onBack()` / `onPreviousPage()` as normal. Both can coexist in the same delegate.
+`BehaviorDelegate.onMenu()` is triggered by a long-press of the physical back/ESC button on
+the Venu 3. The physical top button (labelled "MENU" on the hardware) fires `KEY_ENTER`, not
+`KEY_MENU`. The correct handler for the top button is `onKey()` checking `WatchUi.KEY_ENTER`.
+
+Full Venu 3 button mapping:
+- Top button (labelled "MENU"): fires `KEY_ENTER` → handle with `onKey()` + `KEY_ENTER`
+- Bottom short press: fires `KEY_ESC` → handled by `onBack()`
+- Bottom long press: fires `KEY_MENU` → handled by `onMenu()`
+
+**Simulator trap:** The simulator `M` keyboard shortcut fires `KEY_MENU` (long-press back). The
+graphical top button in the simulator fires `KEY_ENTER`. Code checking `KEY_MENU` in `onKey()`
+will appear to work when pressing `M` on keyboard, but silently fail on device and on the
+graphical top button. Device-confirmed: only `KEY_ENTER` works on the physical top button.
+
+The short and long press on the back button can coexist in the same delegate:
 
 ```monkeyc
 function onBack() as Boolean {
@@ -608,12 +673,17 @@ function onBack() as Boolean {
     return true;
 }
 function onMenu() as Boolean {
-    WatchUi.pushView(new SecondaryView(), ...); // long press
+    WatchUi.pushView(new SecondaryView(), ...); // long press back
     return true;
 }
+function onKey(evt as WatchUi.KeyEvent) as Boolean {
+    if (evt.getKey() == WatchUi.KEY_ENTER) {
+        // top button
+        return true;
+    }
+    return false;
+}
 ```
-
-**Needs device confirmation** — simulator may not distinguish short vs long press reliably.
 
 ### PK-4 — Circle-clipped horizontal bar technique
 
@@ -641,7 +711,7 @@ visual arc, causing it to clip against the bezel unexpectedly at the bottom of t
 ### PK-5 — Confirmed layout constants for secondary screens (FONT_XTINY)
 
 After iterative pixel adjustment in the simulator, these values produce clean results on
-Venu 3 (454×454) with `FONT_XTINY`:
+Venu 3 (454×454) with `FONT_XTINY`. Simulator-confirmed; device layout broadly consistent.
 
 | Element | Value | Notes |
 |---------|-------|-------|
@@ -649,13 +719,10 @@ Venu 3 (454×454) with `FONT_XTINY`:
 | Secondary screen title | y=28–30 | Green, centred |
 | Row height (settings list) | 58px | 6 rows fit y=55 to y=403 |
 | Label-to-value gap (list) | +13px / +38px | From row top |
-| Inter-line spacing (data lines) | 30px | Preview screen “After this” section |
+| Inter-line spacing (data lines) | 30px | Preview screen "After this" section |
 | Green action button | h=38–42px, radius=10 | `fillRoundedRectangle` |
 | Cancel/hint bar | y=380, h=23 | Full-width `fillRectangle` |
-| Footer circle-clipped bar | h=27 | Both main screen bars |
-| Gap between stacked footer bars | 2px | |
-
-**Note:** These are simulator-confirmed. Record device-confirmed values separately after testing.
+| Footer circle-clipped bar | h=27 | Main screen Log/History bar |
 
 ### PK-6 — Word-wrap helper for long names (no SDK wrapping support)
 
@@ -786,152 +853,10 @@ For editing a time stored as total minutes (e.g. bedtime), use a two-column swip
 rather than a raw integer editor. Swipe UP/DOWN increments/decrements the selected column;
 tapping the left half selects hour, right half selects minute.
 
-**View skeleton:**
-```monkeyc
-class BedtimeEditView extends WatchUi.View {
-    private const CX = 227;
-    private var _hourVal   as Number;  // 0–23
-    private var _minVal    as Number;  // 0–59
-    private var _selCol    as Number;  // 0 = hour, 1 = min
-
-    function initialize(bedtimeMinutes as Number) {
-        View.initialize();
-        _hourVal = bedtimeMinutes / 60;
-        _minVal  = bedtimeMinutes % 60;
-        _selCol  = 0;
-    }
-
-    function onUpdate(dc as Graphics.Dc) as Void {
-        dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
-        dc.clear();
-
-        // Title
-        dc.setColor(Graphics.COLOR_GREEN, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(CX, 30, Graphics.FONT_XTINY, "Bedtime",
-            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
-
-        // Hour column (highlight if selected)
-        var hourColor = (_selCol == 0) ? Graphics.COLOR_WHITE : Graphics.COLOR_LT_GRAY;
-        dc.setColor(hourColor, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(160, 200, Graphics.FONT_NUMBER_MEDIUM,
-            _hourVal.format("%02d"),
-            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
-
-        // Colon separator
-        dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(CX, 200, Graphics.FONT_NUMBER_MEDIUM, ":",
-            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
-
-        // Minute column
-        var minColor = (_selCol == 1) ? Graphics.COLOR_WHITE : Graphics.COLOR_LT_GRAY;
-        dc.setColor(minColor, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(294, 200, Graphics.FONT_NUMBER_MEDIUM,
-            _minVal.format("%02d"),
-            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
-
-        // Up/down hint arrows
-        ArrowUtils.drawUpArrow(dc, CX, 120, ArrowUtils.HINT_ARROW_SIZE, Graphics.COLOR_DK_GRAY);
-        ArrowUtils.drawDownArrow(dc, CX, 280, ArrowUtils.HINT_ARROW_SIZE, Graphics.COLOR_DK_GRAY);
-
-        // Save button
-        dc.setColor(0x007700, Graphics.COLOR_TRANSPARENT);
-        dc.fillRoundedRectangle(107, 305, 240, 42, 10);
-        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(CX, 326, Graphics.FONT_XTINY, "Save",
-            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
-
-        // Cancel bar
-        dc.setColor(0x333333, Graphics.COLOR_TRANSPARENT);
-        dc.fillRectangle(0, 380, dc.getWidth(), 23);
-        ArrowUtils.drawDownArrow(dc, CX - 49, 392, ArrowUtils.HINT_ARROW_SIZE,
-            Graphics.COLOR_LT_GRAY);
-        dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(CX - 35, 392, Graphics.FONT_XTINY, "Cancel",
-            Graphics.TEXT_JUSTIFY_LEFT | Graphics.TEXT_JUSTIFY_VCENTER);
-    }
-
-    function getMinutes() as Number { return _hourVal * 60 + _minVal; }
-
-    function increment() as Void {
-        if (_selCol == 0) { _hourVal = (_hourVal + 1)  % 24; }
-        else              { _minVal  = (_minVal  + 1)  % 60; }
-        WatchUi.requestUpdate();
-    }
-
-    function decrement() as Void {
-        if (_selCol == 0) { _hourVal = (_hourVal + 23) % 24; }
-        else              { _minVal  = (_minVal  + 59) % 60; }
-        WatchUi.requestUpdate();
-    }
-
-    function selectCol(tapX as Number) as Void {
-        _selCol = (tapX < CX) ? 0 : 1;
-        WatchUi.requestUpdate();
-    }
-
-    function isSaveTap(tapX as Number, tapY as Number) as Boolean {
-        return tapX >= 107 && tapX <= 347 && tapY >= 305 && tapY <= 347;
-    }
-}
-```
-
-**Delegate skeleton:**
-```monkeyc
-class BedtimeEditDelegate extends WatchUi.BehaviorDelegate {
-    private var _view     as BedtimeEditView;
-    private var _settView as SettingsView;
-
-    function initialize(view as BedtimeEditView, settView as SettingsView) {
-        BehaviorDelegate.initialize();
-        _view     = view;
-        _settView = settView;
-    }
-
-    // Swipe UP = increment selected column
-    function onNextPage() as Boolean {
-        _view.increment();
-        return true;
-    }
-
-    // Swipe DOWN = decrement selected column
-    function onPreviousPage() as Boolean {
-        _view.decrement();
-        return true;
-    }
-
-    function onBack() as Boolean {
-        WatchUi.popView(WatchUi.SLIDE_RIGHT);
-        return true;
-    }
-
-    function onTap(evt as WatchUi.ClickEvent) as Boolean {
-        var coords = evt.getCoordinates();
-        var tapX   = coords[0];
-        var tapY   = coords[1];
-
-        if (_view.isSaveTap(tapX, tapY)) {
-            _settView._settings["bedtimeMinutes"] = _view.getMinutes();
-            StimTrackerStorage.saveSettings(_settView._settings);
-            WatchUi.popView(WatchUi.SLIDE_RIGHT);
-            return true;
-        }
-
-        // Tap digit area = select column
-        if (tapY >= 160 && tapY <= 260) {
-            _view.selectCol(tapX);
-            return true;
-        }
-        return false;
-    }
-}
-```
-
 **Key points:**
 - Store bedtime as total minutes (0–1439) in settings: `bedtimeMinutes = hour*60 + min`
 - `onNextPage()` / `onPreviousPage()` map to swipe UP / swipe DOWN (Venu 3 convention)
 - Digit columns wrap around: hour 23→0, minute 59→0 (use modulo with offset for decrement)
-- Do NOT assign `_settView` as a member of the delegate if it causes a compiler warning about
-  unused variables — read the settings dict reference from the passed-in view's public field instead
 
 ---
 
@@ -941,211 +866,58 @@ The standard pattern for editing a numeric value on a secondary screen. The numb
 `[-]` and `[+]` buttons flank it; tapping the number itself opens `WatchUi.TextPicker`
 pre-populated with the current value so the user can type directly.
 
-**View hit-test functions:**
-```monkeyc
-// All three zones share the same Y band, flush against the Save button top.
-// Tune topY to be ~80–85px above saveTopY (screen-specific — see PK-16).
-
-function isMinusTap(tapX as Number, tapY as Number) as Boolean {
-    return tapX >= 20 && tapX <= 145 && tapY >= TOP_Y && tapY <= SAVE_TOP;
-}
-
-function isPlusTap(tapX as Number, tapY as Number) as Boolean {
-    return tapX >= 309 && tapX <= 434 && tapY >= TOP_Y && tapY <= SAVE_TOP;
-}
-
-function isNumberTap(tapX as Number, tapY as Number) as Boolean {
-    return tapX >= 145 && tapX <= 309 && tapY >= TOP_Y && tapY <= SAVE_TOP;
-}
-```
-
-**Delegate onTap handling:**
-```monkeyc
-if (_view.isMinusTap(tapX, tapY)) {
-    _view.decrementMg();
-    return true;
-}
-if (_view.isPlusTap(tapX, tapY)) {
-    _view.incrementMg();
-    return true;
-}
-if (_view.isNumberTap(tapX, tapY)) {
-    WatchUi.pushView(
-        new WatchUi.TextPicker(_view._caffMg.toString()),
-        new CaffTextPickerDelegate(_view),
-        WatchUi.SLIDE_UP
-    );
-    return true;
-}
-```
-
-**TextPicker delegate:**
-```monkeyc
-class CaffTextPickerDelegate extends WatchUi.TextPickerDelegate {
-
-    private var _editView as MyEditView;  // replace with actual view type
-
-    function initialize(editView as MyEditView) {
-        TextPickerDelegate.initialize();
-        _editView = editView;
-    }
-
-    function onTextEntered(text as String, changed as Boolean) as Boolean {
-        var num = text.toNumber();
-        if (num != null) {
-            if (num < 10)   { num = 10; }    // clamp to min
-            if (num > 1000) { num = 1000; }  // clamp to max
-            _editView._caffMg = num;
-            WatchUi.requestUpdate();
-        }
-        return true;
-    }
-
-    function onCancel() as Boolean {
-        return true;
-    }
-}
-```
-
-**Increment/decrement functions on the view:**
-```monkeyc
-function decrementMg() as Void {
-    if (_caffMg > 10) { _caffMg -= 10; }  // step = 10, min = 10
-    WatchUi.requestUpdate();
-}
-
-function incrementMg() as Void {
-    if (_caffMg < 1000) { _caffMg += 10; }  // step = 10, max = 1000
-    WatchUi.requestUpdate();
-}
-```
-
-**Drawing the number and flanking buttons:**
-```monkeyc
-// Number (large, centred)
-dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
-dc.drawText(CX, NUMBER_Y, Graphics.FONT_NUMBER_MEDIUM, _caffMg.toString(),
-    Graphics.TEXT_JUSTIFY_CENTER);
-
-// Flanking [-] and [+] (same Y as number, to the sides)
-dc.setColor(Graphics.COLOR_BLUE, Graphics.COLOR_TRANSPARENT);
-dc.drawText(110, NUMBER_Y, Graphics.FONT_NUMBER_MEDIUM, "-", Graphics.TEXT_JUSTIFY_CENTER);
-dc.drawText(344, NUMBER_Y, Graphics.FONT_NUMBER_MEDIUM, "+", Graphics.TEXT_JUSTIFY_CENTER);
-```
-
-*One `CaffTextPickerDelegate` class is needed per view type (they differ only in the
-view type annotation). Consider a common naming convention: `[ScreenName]CaffTextPickerDelegate`.)*
+One `CaffTextPickerDelegate` subclass is needed per view type. Naming convention:
+`[ScreenName]CaffTextPickerDelegate`.
 
 ---
 
 ### PK-16 — Hitbox alignment for numeric input widgets
 
-The hit zones for `[-]`, number, and `[+]` must be calibrated per screen because the number
-glyph height and its Y position differ. The governing rules arrived at through device testing:
+The hit zones for `[-]`, number, and `[+]` must be calibrated per screen.
 
 **Bottom:** Align with the top Y of the Save button immediately below — zero gap, no overlap.
 **Top:** 80–85px above the bottom (roughly covers the glyph plus comfortable tap margin).
-**Horizontal:** Three equal thirds of screen width (CX=227, total width ~454):
-- `[-]`: x 20–145 (left zone, minus glyph drawn at x≈110)
+**Horizontal:**
+- `[-]`: x 20–145 (left zone)
 - Number: x 145–309 (centre zone)
-- `[+]`: x 309–434 (right zone, plus glyph drawn at x≈344)
+- `[+]`: x 309–434 (right zone)
 
-Note: for DoseEditView the `[-]` and `[+]` x-bounds are slightly different (20–165 and 289–434)
-because the glyph positions are slightly different on that screen.
+Note: for DoseEditView the `[-]` and `[+]` x-bounds are slightly different (20–165 and 289–434).
 
-**Per-screen values confirmed:**
+**Per-screen values (simulator-confirmed):**
 
 | Screen | topY | bottomY | Save top | Notes |
 |--------|------|---------|----------|-------|
 | ValueEditView (Settings) | 220 | 305 | 305 | |
-| ProfileEditView | 198 | 283 | 283 | |
-| EditStimulantView (Add Stim) | 200 | 280 | 305 | Bottom deliberately 25px above Save |
+| ProfileEditView | 225 | 305 | 308 | KB §16 confirmed |
+| EditStimulantView | 200 | 280 | 305 | Bottom 25px above Save |
 | MiscCaffeineView | 165 | 245 | 288 | Bottom 43px above Preview button |
-| DoseEditView (History) | 255 | 323 | 323 | Different x-bounds — see above |
-
-**Do not** extend hitbox tops up to the label area above the number ("Caffeine (mg):", etc.) —
-that creates a zone that is 150–200px tall which far exceeds the visible glyph, confuses users,
-and risks accidental increments when attempting to tap other elements.
+| DoseEditView (History) | 230 | 288 | 288 | Different x-bounds — see above |
 
 ---
 
 ### PK-17 — ValueEditView title word-wrap
 
-Settings titles for the `ValueEditView` editor (e.g. "Sleep Threshold", "Half-Life (hrs)")
-may exceed 16 characters. Monkey C does not wrap `drawText()` automatically. Split the title
-at the space nearest to the midpoint and draw two lines:
-
-```monkeyc
-private function _drawTitle(dc as Graphics.Dc) as Void {
-    if (_title.length() <= 16) {
-        dc.drawText(CX, 46, Graphics.FONT_XTINY, _title,
-            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
-    } else {
-        // Split at space nearest midpoint
-        var mid  = _title.length() / 2;
-        var best = -1;
-        var dist = 999;
-        for (var i = 0; i < _title.length(); i++) {
-            if (_title.substring(i, i + 1).equals(" ")) {
-                var d = (i - mid).abs();
-                if (d < dist) { dist = d; best = i; }
-            }
-        }
-        if (best < 0) {
-            // No space — hard break at midpoint
-            dc.drawText(CX, 30, Graphics.FONT_XTINY,
-                _title.substring(0, mid), Graphics.TEXT_JUSTIFY_CENTER);
-            dc.drawText(CX, 63, Graphics.FONT_XTINY,
-                _title.substring(mid, _title.length()), Graphics.TEXT_JUSTIFY_CENTER);
-        } else {
-            dc.drawText(CX, 30, Graphics.FONT_XTINY,
-                _title.substring(0, best), Graphics.TEXT_JUSTIFY_CENTER);
-            dc.drawText(CX, 63, Graphics.FONT_XTINY,
-                _title.substring(best + 1, _title.length()), Graphics.TEXT_JUSTIFY_CENTER);
-        }
-    }
-}
-```
-
-Line 1 at y=30, line 2 at y=63 — these were tuned in the simulator. Single-line titles draw
-at y=46 (midpoint between the two).
+Settings titles for the `ValueEditView` editor may exceed 16 characters. Split the title at
+the space nearest to the midpoint and draw two lines. Line 1 at y=30, line 2 at y=63.
+Single-line titles draw at y=46 (midpoint between the two).
 
 ---
 
-### PK-18 — Compiler warning patterns to avoid
-
-Warnings that surfaced during StimTracker development (all treated as errors in CI):
+## 18. Compiler Warning Patterns to Avoid
 
 **Unused local variable:**
 ```monkeyc
-// BAD — triggers "unused variable" warning
+// BAD — triggers warning if never read
 var w = dc.getWidth();
-
-// FIX — remove the assignment if the variable is never read
+// FIX — remove the assignment
 ```
 
-**Unused member variable (delegate/view disconnect):**
-If a member variable is assigned in `initialize()` but never read in any method, the analyser
-will warn. Common cause: refactoring a delegate to call `_view._field` instead of caching
-`_field` locally, but forgetting to remove the now-dead member declaration.
-```monkeyc
-// BAD
-class MyDelegate {
-    private var _settings as Dictionary;  // was used; now _view._settings is called instead
-    function initialize(view as MyView, settings as Dictionary) {
-        _settings = settings;  // dead assignment → warning
-    }
-}
+**Unused member variable after refactoring:**
+If a member is assigned in `initialize()` but never read (e.g. after switching to `_view._field`), the analyser warns. Remove the dead member declaration.
 
-// FIX — remove the unused member; pass it only to the view or read it via _view
-```
-
-**Unreachable branch due to Boolean member initialised to false:**
-The static analyser performs interprocedural analysis from `initialize()`. If a Boolean member
-is initialised to `false` and only set to `true` via a code path the analyser considers
-unreachable, the `if (_flag) { ... }` branch will be flagged as unreachable dead code.
-Prefer opaque API values (e.g. `info.timerState`) over Boolean flags where possible.
-Already documented in the general KB — cross-reference: `monkey_c_lessons.md`.
+**Unreachable branch due to Boolean member:**
+The static analyser traces from `initialize()`. If a Boolean member is initialised to `false` and only set to `true` via a path the analyser considers unreachable, the `if (_flag)` branch is flagged as dead code. Prefer opaque API values (`info.timerState`) over Boolean flags where possible. See `monkeyc_analyzer_unreachable_statement_guide.md` for full detail.
 
 ---
 
@@ -1169,11 +941,7 @@ the delegate chain, so the refreshed list is ready to display when the stack unw
 
 ---
 
-### Pending KB Additions
-
-> **DO NOT add these to the KB yet.** Pending real-device test to confirm no regressions.
-
-#### Sort Order Feature — device test required
+#### Sort Order Feature — promoted to KB §stimtracker_development_lessons.md §20
 
 - Sort order stored as **array position** (not a dedicated field) — reordering = remove-and-insert on the profiles array via `StimTrackerStorage.reorderProfile(fromIdx, toIdx)`.
 - `ProfileEditView` accepts `sortOrder as Number` and `totalProfiles as Number` in constructor; exposes a tap-to-activate swipe widget for the sort order value.
@@ -1182,14 +950,393 @@ the delegate chain, so the refreshed list is ready to display when the stack unw
 - Callers (PreviewDelegate.onMenu, LogStimulantDelegate.onHold) search the profiles array for the matching profile ID to determine current index, then pass `idx+1` and `profiles.size()` to the constructor.
 - Sort order highlight box: `fillRoundedRectangle(CX-26, 150, 52, 46, 6)` — height 46px (extended from 30px during simulator tuning).
 
-#### FONT_NUMBER_MEDIUM/MILD Visual Offset — additional screens to verify
+---
 
-We confirmed `FONT_NUMBER_MEDIUM` without VCENTER places y at the bounding-box top, with the visual glyph appearing ~25px lower (y=219 → visual top y≈244, visual bottom y≈303). Manual pixel compensation has been applied throughout the app. The following screens use large number fonts without VCENTER and *may* have similar offsets — no changes made, pending visual check:
+#### FONT_NUMBER_MEDIUM/MILD Visual Offset — promoted to KB §stimtracker_development_lessons.md §19
 
-| Screen | Font | Notes |
-|--------|------|-------|
-| ValueEditView (Settings) | FONT_NUMBER_HOT | Different size — offset may differ |
-| AdjustTimeView (time columns) | FONT_NUMBER_MILD | Multiple columns |
-| MainView (large caffeine display) | FONT_NUMBER_HOT | Already visually verified? |
+Device-confirmed: all screens using large number fonts without VCENTER (ProfileEditView, ValueEditView, AdjustTimeView, MainView) have correct glyph/hitbox alignment. The manual pixel compensation applied throughout the app was correct. See §19 for the full documented pattern and confirmed screen list.
 
-If any of these look misaligned on device, the fix pattern is the same: move the number y upward to compensate (do not change hitboxes).
+---
+
+## 14. Absorption Modelling — Research Notes
+
+> **Status:** Research complete. Implementation complete — see §15 for implemented design and §13 for updated model description.
+
+### 14a. What Other Apps Do
+
+**The short answer: none of them model food state at all.**
+
+- **Caffeine Zone 2 (Penn State, the academic gold standard)** — their own website explicitly states it "Does not take account of the many factors that influence half-life and thresholds, including, **individual differences, food intake**, age, nicotine use, and certain medications." Despite being built by pharmacokinetics researchers with ONR funding, they made a deliberate simplification decision. The app does let you enter consumption time (which shapes the curve), but treats all doses as occurring under the same absorption conditions.
+- **Caffeine Clock** — models absorption rate and lets you enter how long you took to drink something. No food state parameter.
+- **HiCoffee** — has "metabolism inputs" (focused on half-life/metabolizer type). No food state toggle.
+- **RECaf, WaterMinder, generic trackers** — none implement food state. All use a fixed absorption curve per dose type.
+- **Caffeine Tracker (rogan.software)** — explicitly lists factors its algorithm accounts for (pregnancy, other modifiers) but not food intake.
+
+A Slashdot commenter reviewing Caffeine Zone 2 at launch observed directly: *"Just by drinking a coffee with an empty stomach, or after a big meal, changes completely the caffeine effects. It is better to rely on one's own feelings."* — this was identified as a known gap even in 2012 and has remained unaddressed by every app since.
+
+**Implication for StimTracker:** The empty stomach toggle would be a genuine differentiator. No existing app, including the research-backed Penn State one, models this. Our plan to implement it is on firmer ground than any competitor's, and we would be the first caffeine tracker to explicitly model fasted vs. fed absorption.
+
+---
+
+### 14b. What the Research Shows
+
+#### The Standard Two-Phase Model (Absorption + Elimination)
+
+The current model treats caffeine as instantly in-system from the moment it is logged. The pharmacokinetic literature is consistent that this is a simplification. The standard model for oral caffeine (and drugs in general) is a **one-compartment model with first-order absorption and first-order elimination**, often called the "one-compartment open model with first-order input".
+
+For a single bolus dose (instant ingestion), the plasma concentration at time `t` is:
+
+```
+C(t) = (F × D × ka) / (Vd × (ka - ke)) × (e^(-ke×t) - e^(-ka×t))
+```
+
+Where:
+- `F`  = bioavailability (1.0 for caffeine — virtually complete oral absorption)
+- `D`  = dose (mg)
+- `ka` = absorption rate constant (h⁻¹)
+- `ke` = elimination rate constant (h⁻¹) = ln(2) / half-life
+- `Vd` = volume of distribution (L)
+- `t`  = time elapsed since dose (hours)
+
+Since we track caffeine in mg-in-system (not plasma concentration), and Vd cancels when we normalise, the ratio form is what matters for our purposes. We do not measure plasma concentration — we track an estimated "amount in system" which is proportional to it.
+
+The key insight: this equation rises from zero, peaks at Tmax, then falls exponentially. The current model only has the falling exponential — it misses the rising phase.
+
+#### Absorption Rate Constants — What the Data Say
+
+**For liquid caffeine (energy drinks, coffee, dissolved powder):**
+- Multiple sources agree: 99% absorbed within 45 minutes (Bonati et al. 1982; Liguori et al. 1997; NCBI Bookshelf NBK223808)
+- Tmax typically 15–60 minutes for liquids, occasionally up to 90 minutes (Alsabri et al. 2018; MDPI Beverages 2019)
+- White et al. (2016, PMC4898153): drink speed (2 min vs 20 min) did not meaningfully change pharmacokinetics
+- Practical `ka` for liquids: **~3–4 h⁻¹** is the commonly cited range in controlled studies (corresponds to Tmax ~20–45 min)
+
+**For capsules/tablets (anhydrous caffeine):**
+- Tmax: 45–120 minutes (Kamimori et al. 2002; NCBI NBK223808; Alsabri 2018)
+- Kamimori et al. (2002): capsule `ka` ranges **1.29–2.36 h⁻¹** (vs gum 3.21–3.96 h⁻¹)
+- Practical `ka` for capsules: **~1.5–2.0 h⁻¹** is well-supported (corresponds to Tmax ~45–90 min)
+
+#### Empty Stomach (Fasted State) Toggle
+
+Three natural states based on gastric emptying physiology:
+
+| Time since eating | Gastric state | App state |
+|---|---|---|
+| 0–1 hour | Actively digesting, stomach full | Taken with food |
+| 1–3 hours | Partially emptied, returning to baseline | Default (neither toggle) |
+| 3+ hours / before first meal | Essentially fasted motility | Empty stomach toggle |
+
+The default intermediate state represents typical real-world caffeine consumption (1–3 hours after eating).
+
+### 14c. Proposed Parameter Values for Implementation
+
+| Parameter | Drink (liquid) | Capsule/Pill | Source |
+|-----------|---------------|--------------|--------|
+| `ka` (empty stomach toggle ON) | 3.5 h⁻¹ | 1.75 h⁻¹ | Kamimori 2002; Alsabri 2018 (fasted-state literature values) |
+| `ka` (default — neither toggle) | 2.75 h⁻¹ | 1.375 h⁻¹ | Average of fasted and fed; represents typical 1–3h post-meal consumption |
+| `ka` (taken with food toggle ON) | 2.0 h⁻¹ | 1.0 h⁻¹ | Fasted values ÷ 1.75× (Fuseau synthesis) |
+| Tmax (fasted, drink) | ~20 min | ~45 min | Derived from ka |
+| Tmax (default, drink) | ~30 min | ~65 min | Derived from ka |
+| Tmax (with food, drink) | ~45 min | ~90 min | Derived from ka |
+| Bioavailability (F) | ~1.0 | ~1.0 | NCBI NBK223808 |
+
+**What we do NOT need:** Volume of distribution (Vd). Since we track mg-in-system (not plasma concentration), the Vd cancels in the normalised calculation.
+
+---
+
+## 15. Absorption Model Setting — IMPLEMENTED
+
+> **Status:** IMPLEMENTED. Storage engine, glance mirror, settings UI, params screens, and per-dose food state selector all complete. Pending device verification of PK behaviour (see §17).
+>
+> **Implementation notes vs. original plan:**
+> - `emptyStomach`/`withFood` dual booleans replaced with `foodState` integer enum (0/1/2) per Grok review — cleaner, no implicit "both false = Typical" rule
+> - `calcAbsorbedMg()` and `getKa()` live in `StimTrackerStorage.mc`
+> - Glance (StimTrackerApp.mc) mirrors the full dispatch logic inline per PK-10 pattern
+> - Settings screen extended with Absorption Model row + Standard Food State sub-setting
+> - All params screens live in `ParamsViews.mc` (DoseParamsView, ProfileParamsView, MiscParamsView)
+
+### 15a. Overview
+
+The absorption model is exposed as a user-facing setting with three modes. The setting lives in Settings alongside half-life, daily limit, etc.
+
+| Mode | Label | What it does |
+|------|-------|-------------|
+| 0 | **Instant** | Current behaviour: full dose in-system at log time. No absorption curve. |
+| 1 | **Standard** | One-compartment PK model with drink/pill distinction. Fixed ka at intermediate state (no per-dose food state choice). Optional global food state sub-setting. |
+| 2 | **Precision** | Full model: drink/pill distinction + per-dose three-state food selector (Fasted / Typical / With Food). |
+
+**Why "Standard" uses intermediate ka:** The intermediate (neither-fasted nor with-food) ka best represents the typical real-world case — most caffeine is consumed 1–3 hours after eating. Using fasted-state literature values as the Standard default would systematically overestimate early-phase caffeine for the majority of users.
+
+---
+
+### 15b. Instant Mode
+
+Behaviour identical to current `calcCurrentMg()`. No changes to logging flow, storage, or UI. Acts as a compatibility/simplicity option.
+
+---
+
+### 15c. Standard Mode
+
+**Calculation:** Uses the one-compartment oral absorption formula with:
+- `ka` determined by drink/pill type
+- Food state fixed globally (not per-dose) — defaults to Typical (intermediate)
+
+**Sub-setting (appears in Settings only when Standard is active):**
+`Standard Absorption Profile` — three options:
+- Fasted (I usually have caffeine before eating)
+- **Typical** (default — I usually have caffeine 1–3h after eating)
+- With Food (I usually have caffeine with a meal)
+
+**UI changes for Standard mode:**
+- Dose Form parameter (Drink/Pill) accessible via gear icon on: ProfileEditView, EditStimulantView, MiscCaffeineView
+- No food state selector during logging
+- Button label: **"Dose Options"** (renamed from "Adjust Time" across all modes)
+
+---
+
+### 15d. Precision Mode
+
+**Calculation:** Uses the one-compartment oral absorption formula with:
+- `ka` determined by drink/pill type AND per-dose food state flag
+- Food state chosen per dose at log time
+
+**Per-dose food state selector:**
+Three tappable labels: `[ Fasted ]  [ Typical ]  [ With Food ]`
+- "Typical" is pre-selected by default each time the screen is opened
+- Selection is per-dose; resets to Typical after each log
+
+---
+
+### 15e. "Dose Options" Screen (renamed from "Adjust Time")
+
+Renamed across all modes. Precision mode adds a food state selector row between the time section and the Save/Record buttons.
+
+---
+
+### 15f. MiscCaffeineView Changes
+
+- "How much caffeine?" label moved from y=90 to y=~115 (all modes)
+- Drink/Pill toggle replaced by gear icon pattern (see §16i)
+
+---
+
+### 15g. ProfileEditView / EditStimulantView Changes
+
+- Drink/Pill toggle replaced by gear icon pattern (see §16g)
+- `profile["type"]` persisted in storage; migration default is `"drink"`
+
+---
+
+### 15h. DoseEditView (History) Changes
+
+**Standard mode:** Dose Form editable. Food State not shown.
+**Precision mode:** Dose Form + Food State selector both editable.
+**Instant mode:** Neither shown.
+
+Migration: `type` absent → `"drink"`; `foodState` absent → `1` (Typical).
+
+---
+
+### 15i. Storage Schema Changes
+
+See §9 (Data Model) for the complete implemented schema.
+
+**Why enum over booleans:** A single `foodState` integer is cleaner than two booleans (`emptyStomach`, `withFood`) whose combined meaning required an implicit rule (both false = Typical). The enum maps directly to the three-option UI selector. Suggested by Grok review.
+
+---
+
+### 15j. calcCurrentMg Dispatch
+
+```
+function calcCurrentMg(settings):
+    model = settings["absorptionModel"]  // 0, 1, or 2
+    ...
+    for each dose in activeDoses:
+        elapsed = (nowSec - dose["startSec"]) / 3600.0
+        window  = (dose["finishSec"] - dose["startSec"]) / 3600.0
+
+        if model == 0:  // Instant
+            remaining += dose["caffeineMg"] * 0.5 ^ (elapsed / halfLifeHrs)
+
+        else if model == 1:  // Standard
+            foodState = settings["standardFoodState"]  // global
+            ka = getKa(dose["type"], foodState)
+            remaining += calcAbsorbedMg(dose["caffeineMg"], ka, ke, elapsed, window)
+
+        else:  // Precision
+            ka = getKa(dose["type"], dose["foodState"] != null ? dose["foodState"] : 1)
+            remaining += calcAbsorbedMg(dose["caffeineMg"], ka, ke, elapsed, window)
+```
+
+The glance view's inline decay loop mirrors the same dispatch logic.
+
+---
+
+### 15k. README Update — DONE
+
+README.md updated to describe the absorption model modes and food state options. The "safe to sleep" wording was also corrected to "Below Sleep Threshold" throughout.
+
+---
+
+## 16. Dose Parameters UI Pattern — IMPLEMENTED
+
+> **Status:** IMPLEMENTED. Gear icon + params screens deployed across all four target views.
+> Device-confirmed: gear visible and correctly sized, top button (KEY_ENTER) working, hitbox
+> ordering correct (gear checked before name in onTap chain).
+>
+> **Implementation vs. plan divergences:**
+> - **Gear icon is a PNG bitmap asset** (`resources/drawables/gear_icon.png`), not a drawn
+>   `IconUtils.drawGear()` function. Generated at 448px, downsampled with LANCZOS to 56px.
+>   `IconUtils.mc` module was planned but is not used — PNG approach is cleaner.
+> - **Top button constant is `KEY_ENTER`**, not `KEY_MENU`. Physical "MENU" label on the
+>   hardware is misleading. See PK-3 for full mapping.
+> - **Gear safe zone:** At x=395, minimum safe y≈74 (circular bezel constraint). Initial
+>   placement at y=40 was fully clipped; moved to ~y=100–108 across screens.
+> - **All params screens in `ParamsViews.mc`**: DoseParamsView/Delegate, ProfileParamsView/
+>   Delegate, MiscParamsView/Delegate all in one file.
+> - **Hitbox ordering**: Gear hitbox must be evaluated *before* wide name/label hitboxes in
+>   `onTap()` — the name hitbox extends to the bezel edge and swallows gear taps otherwise.
+
+### 16a. Overview and Rationale
+
+The **gear icon → parameters list** pattern is adopted uniformly across:
+
+- **DoseEditView** (editing historical doses)
+- **ProfileEditView** (editing saved stimulant profiles)
+- **EditStimulantView** (adding new stimulant profiles)
+- **MiscCaffeineView** (quick-log screen)
+
+This avoids cluttering primary screens with conditional rows that appear/disappear based on settings, and provides a natural home for future additions without restructuring existing layouts.
+
+---
+
+### 16b. The Gear Icon — IMPLEMENTED AS PNG
+
+The gear icon is a **PNG bitmap asset**, not a drawn `IconUtils` function. The `IconUtils.mc`
+module approach was planned but the PNG gives better results (smooth edges via LANCZOS
+downsampling) with less code. `gear_icon.png` is in `resources/drawables/`.
+
+**Loading pattern in each view's `initialize()`:**
+```monkeyc
+_gearBmp = WatchUi.loadResource(Rez.Drawables.GearIcon) as Graphics.BitmapResource;
+```
+
+**Drawing centred on a coordinate in `onUpdate()`:**
+```monkeyc
+dc.drawBitmap(cx - (_gearBmp.getWidth() / 2), cy - (_gearBmp.getHeight() / 2), _gearBmp);
+```
+
+**Safe-zone check for circular display** — at x=395 (168px from centre), minimum safe y≈74.
+Actual placement is ~y=100–108 across the four views. See PENDING_KB.md §1b for the formula.
+
+The gear hitbox is a `gearButtonRegion()` accessor on the view, returning `[x1, y1, x2, y2]`.
+It must be checked **first** in the `onTap()` handler before any wider hitbox.
+
+---
+
+### 16c. Dose Form Parameter
+
+**Parameter label:** **"Dose Form"** | **Options:** `Drink` | `Pill`
+
+**Which modes show this:** Standard and Precision (not Instant). Greyed out and non-interactive in Instant mode.
+
+**Storage:** `dose["type"]` in log entries; `profile["type"]` in profile storage. Migration: absent = `"drink"`.
+
+---
+
+### 16d. Food State Parameter
+
+**Parameter label:** **"Food State"** | **Options:** `Fasted` | `Typical` | `With Food`
+
+**Which modes show this:** Precision only. Greyed out in Instant and Standard modes.
+
+**Storage:** `dose["foodState"]` as Number (0=Fasted, 1=Typical, 2=WithFood). Migration: absent = 1 (Typical).
+
+---
+
+### 16e. Greyed Out vs Hidden
+
+Parameters that depend on a mode not currently active are greyed out and non-interactive (not hidden). This makes mode-dependent settings discoverable. The gear icon itself is always visible in all modes.
+
+---
+
+### 16f. DoseEditView Changes — IMPLEMENTED
+
+Gear icon placed in the gap between name area and time picker. Tapping pushes `DoseParamsView`
+(in `ParamsViews.mc`). Top button (KEY_ENTER) also opens the same screen.
+
+---
+
+### 16g. ProfileEditView and EditStimulantView Changes — IMPLEMENTED
+
+Gear icon placed on right side of bezel on both screens. Tapping pushes `ProfileParamsView`
+(in `ParamsViews.mc`). Top button (KEY_ENTER) also opens the same screen on both views.
+Profile's `type` field persisted in storage; migration default is `"drink"`.
+
+---
+
+### 16i. MiscCaffeineView Changes — IMPLEMENTED
+
+Gear icon placed at approximately x=395, y=35 (top-right, same row as title). Tapping pushes
+`MiscParamsView` (in `ParamsViews.mc`). Top button (KEY_ENTER) also opens the same screen.
+"How much caffeine?" label moved down from y=90 to y=~115.
+
+Per-log state (type, foodState) defaults to `"drink"` / `1` (Typical) each time
+MiscCaffeineView opens. Set via MiscParamsView and passed to PreviewView at log time.
+
+---
+
+### 16j. Shared Sub-Screen Designs — IMPLEMENTED
+
+Dose Form and Food State sub-screens implemented as described. Selection is immediate (no
+separate Save); sub-screen pops back to the params list on tap. All sub-screens in
+`ParamsViews.mc`.
+
+---
+
+### 16k. Future-Proofing Notes
+
+- The params list screens are intentionally styled like SettingsView (scrollable list, label + current value per row). Once there are 4+ rows they become scrollable without any structural change.
+- As Phase 2 ingredients (L-Theanine, Taurine, etc.) are added to profiles, their per-ingredient parameters (limits, half-lives) will appear in ProfileParamsView / EditStimulantView's params list.
+
+---
+
+## 17. Device Testing Checklist — Absorption Model
+
+> **Status:** READY TO RUN. Implementation complete. Run these tests with the absorption model active (set absorptionModel ≠ 0 in Settings).
+
+### 17a. Functional correctness
+
+| Test | Expected result | Notes |
+|------|----------------|-------|
+| Morning fasted log (absorptionModel=1 or 2, foodState=0) | "In system" rises gradually over ~20 min rather than instant spike | Confirms ka=3.5 h⁻¹ path |
+| Same dose, foodState=2 (With Food) | Rise is noticeably slower, peak later and lower | Confirms ka=2.0 h⁻¹ path |
+| Pill dose (absorptionModel=1, type="pill") | Rise slower than drink; peak ~45–65 min | Confirms ka=1.375 h⁻¹ typical path |
+| Long sipping session via Start Recording → End after 90 min | Peak noticeably lower and later than bolus equivalent | Confirms piecewise window model |
+| Instant mode still works | Numbers identical to pre-update behaviour | Regression check |
+
+### 17b. Glance / Main screen parity
+
+| Test | Expected result |
+|------|----------------|
+| Open glance immediately after logging | Glance and main screen show same (low) in-system value — both reflect absorption curve, not instant load |
+| Check glance first thing in morning | Yesterday's doses correctly contribute to current mg (PK-10 fix still intact) |
+
+### 17c. Migration
+
+| Test | Expected result |
+|------|----------------|
+| Install over existing install with logged doses | App launches without crash; old log entries load with `foodState` defaulting to 1 (Typical) |
+| Numbers after 2+ hours | Nearly identical to pre-update (absorption curve has resolved; only differs in first ~1h window) |
+| Old entries in DoseEditView | Dose Form and Food State show "Drink" and "Typical" respectively (migration defaults) |
+
+### 17d. Battery / performance
+
+| Test | Expected result |
+|------|----------------|
+| Run 24h with absorptionModel=2 and ~10 doses logged | Battery drain indistinguishable from Instant mode — floating-point PK math on glance update should be negligible |
+
+### 17e. Preview UX (follow-on — do not block absorption model release)
+
+> The instant-model preview showed a single "~Xmg in system" figure which was the current load plus the new dose. Under the absorption model this number is nearly zero at log time (nothing absorbed yet), then rises. This creates a confusing preview. The fix — showing peak time/dosage as an interim measure before a full graph is implemented — is a follow-on task and should not block the absorption model release.
+
+Tracked separately. Do not implement during the absorption model feature.

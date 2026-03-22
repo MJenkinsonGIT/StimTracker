@@ -1,0 +1,23 @@
+{
+  "complications" : [ {
+    "ciqId" : {
+      "id" : 0,
+      "devicePartNumber" : "006-B4260-00"
+    },
+    "icon" : "65672388.png",
+    "title" : "ComplicationLongLabel",
+    "defaultLayoutId" : 0,
+    "layouts" : [ {
+      "id" : 0,
+      "iconContent" : "65672388.svg",
+      "iconPosition" : "left",
+      "textDefault" : "ComplicationLongLabel",
+      "textPosition" : "right"
+    } ]
+  } ],
+  "strings" : {
+    "default" : {
+      "ComplicationLongLabel" : "Caffeine in System"
+    }
+  }
+}

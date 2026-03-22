@@ -123,8 +123,11 @@ class StimGlanceView extends WatchUi.GlanceView {
             return;
         }
 
-        var limitMg  = settings["limitMg"] as Number;
-        var halfLife = settings["halfLifeHrs"] as Float;
+        var limitMg          = settings["limitMg"] as Number;
+        var halfLife         = settings["halfLifeHrs"] as Float;
+        var absorptionModel  = settings.hasKey("absorptionModel")   ? settings["absorptionModel"]   as Number : 0;
+        var stdFoodState     = settings.hasKey("standardFoodState") ? settings["standardFoodState"] as Number : 1;
+        var glanceKe         = Math.log(2.0, Math.E).toFloat() / halfLife;
 
         var todayKey     = _glanceTodayKey();
         var yesterdayKey = _glanceYesterdayKey();
@@ -159,19 +162,71 @@ class StimGlanceView extends WatchUi.GlanceView {
                 if (elapsedStartHrs < 0.0f || elapsedStartHrs >= halfLife * 7.0f) { continue; }
 
                 var remaining;
-                if (finishSec <= startSec) {
-                    remaining = caffMg.toFloat() * Math.pow(0.5, elapsedStartHrs / halfLife).toFloat();
-                } else {
-                    var durHrs = (finishSec - startSec).toFloat() / 3600.0f;
-                    var coeff  = caffMg.toFloat() / durHrs * (halfLife / ln2);
-                    if (nowSec < finishSec) {
-                        remaining = coeff * (1.0f - Math.pow(0.5, elapsedStartHrs / halfLife).toFloat());
+                if (absorptionModel == 0) {
+                    // Instant model (original logic)
+                    if (finishSec <= startSec) {
+                        remaining = caffMg.toFloat() * Math.pow(0.5, elapsedStartHrs / halfLife).toFloat();
                     } else {
-                        var elapsedFinishHrs = (nowSec - finishSec).toFloat() / 3600.0f;
-                        remaining = coeff * (Math.pow(0.5, elapsedFinishHrs / halfLife).toFloat()
-                                           - Math.pow(0.5, elapsedStartHrs / halfLife).toFloat());
+                        var durHrs = (finishSec - startSec).toFloat() / 3600.0f;
+                        var coeff  = caffMg.toFloat() / durHrs * (halfLife / ln2);
+                        if (nowSec < finishSec) {
+                            remaining = coeff * (1.0f - Math.pow(0.5, elapsedStartHrs / halfLife).toFloat());
+                        } else {
+                            var elapsedFinishHrs = (nowSec - finishSec).toFloat() / 3600.0f;
+                            remaining = coeff * (Math.pow(0.5, elapsedFinishHrs / halfLife).toFloat()
+                                               - Math.pow(0.5, elapsedStartHrs / halfLife).toFloat());
+                        }
+                        if (remaining < 0.0f) { remaining = 0.0f; }
                     }
-                    if (remaining < 0.0f) { remaining = 0.0f; }
+                } else {
+                    // Full one-compartment PK model (matches calcAbsorbedMg)
+                    var dType = evt.hasKey("type")      ? evt["type"]      as String : "drink";
+                    var fs    = (absorptionModel == 2 && evt.hasKey("foodState"))
+                                ? evt["foodState"] as Number : stdFoodState;
+                    var ka;
+                    if (dType.equals("drink")) {
+                        ka = (fs == 0) ? 3.5f : ((fs == 2) ? 2.0f : 2.75f);
+                    } else {
+                        ka = (fs == 0) ? 1.75f : ((fs == 2) ? 1.0f : 1.375f);
+                    }
+                    var diff = ka - glanceKe;
+                    if (diff < 0.0f) { diff = -diff; }
+                    if (diff < 0.001f) {
+                        remaining = caffMg.toFloat() * Math.pow(0.5, elapsedStartHrs * glanceKe / ln2).toFloat();
+                    } else {
+                        var windowHrs = (finishSec - startSec).toFloat() / 3600.0f;
+                        if (windowHrs < 0.0f || dType.equals("pill")) { windowHrs = 0.0f; }
+                        if (windowHrs <= 0.0f) {
+                            // Bolus path
+                            var ke_d = Math.pow(0.5, elapsedStartHrs * glanceKe / ln2).toFloat();
+                            var ka_d = Math.pow(0.5, elapsedStartHrs * ka       / ln2).toFloat();
+                            remaining = caffMg.toFloat() * (ka / (ka - glanceKe)) * (ke_d - ka_d);
+                            if (remaining < 0.0f) { remaining = 0.0f; }
+                        } else {
+                            // Window path — piecewise zero-order input
+                            var R = caffMg.toFloat() / windowHrs;
+                            var T = windowHrs;
+                            if (elapsedStartHrs <= T) {
+                                var ke_d = Math.pow(0.5, elapsedStartHrs * glanceKe / ln2).toFloat();
+                                var ka_d = Math.pow(0.5, elapsedStartHrs * ka       / ln2).toFloat();
+                                remaining = (R / glanceKe) * (1.0f - ke_d)
+                                          - (R * ka) / (glanceKe * (ka - glanceKe)) * (ke_d - ka_d);
+                                if (remaining < 0.0f) { remaining = 0.0f; }
+                            } else {
+                                var ke_T    = Math.pow(0.5, T * glanceKe / ln2).toFloat();
+                                var ka_T    = Math.pow(0.5, T * ka       / ln2).toFloat();
+                                var A_gut_T = (R / ka) * (1.0f - ka_T);
+                                var A_bdy_T = (R / glanceKe) * (1.0f - ke_T)
+                                            - (R * ka) / (glanceKe * (ka - glanceKe)) * (ke_T - ka_T);
+                                if (A_bdy_T < 0.0f) { A_bdy_T = 0.0f; }
+                                var dt    = elapsedStartHrs - T;
+                                var ke_dt = Math.pow(0.5, dt * glanceKe / ln2).toFloat();
+                                var ka_dt = Math.pow(0.5, dt * ka       / ln2).toFloat();
+                                remaining = A_bdy_T * ke_dt + A_gut_T * (ka / (ka - glanceKe)) * (ke_dt - ka_dt);
+                                if (remaining < 0.0f) { remaining = 0.0f; }
+                            }
+                        }
+                    }
                 }
                 currentMg += remaining;
             }

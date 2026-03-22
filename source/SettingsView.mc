@@ -22,8 +22,10 @@ class SettingsView extends WatchUi.View {
     static const ITEM_HALF_LIFE   = 1;
     static const ITEM_SLEEP_MG    = 2;
     static const ITEM_BEDTIME     = 3;
-    static const ITEM_OOPS        = 4;
-    static const ITEM_RESET_TODAY = 5;
+    static const ITEM_OOPS             = 4;
+    static const ITEM_RESET_TODAY      = 5;
+    static const ITEM_ABSORPTION_MODEL = 6;
+    static const ITEM_STANDARD_FOOD    = 7;
 
     function initialize(settings as Dictionary) {
         View.initialize();
@@ -68,12 +70,17 @@ class SettingsView extends WatchUi.View {
         }
     }
 
-    private function _buildItems() as Array<Array> {
+    // Returns Array of [label, value, typeId] triples.
+    // typeId is one of the ITEM_* constants — used by the delegate to dispatch
+    // on type rather than index, which handles conditional rows cleanly.
+    function _buildItems() as Array<Array> {
         var limitMg     = _settings["limitMg"] as Number;
         var halfLife    = _settings["halfLifeHrs"] as Float;
         var sleepMg     = _settings["sleepThresholdMg"] as Number;
         var bedtimeMins = _settings["bedtimeMinutes"] as Number;
         var oopsMg      = _settings["oopsThresholdMg"];
+        var absModel    = _settings.hasKey("absorptionModel")   ? _settings["absorptionModel"]   as Number : 0;
+        var stdFood     = _settings.hasKey("standardFoodState") ? _settings["standardFoodState"] as Number : 1;
 
         var bedH    = bedtimeMins / 60;
         var bedM    = bedtimeMins % 60;
@@ -87,14 +94,25 @@ class SettingsView extends WatchUi.View {
             ? (oopsMg as Float).toNumber().toString() + "mg"
             : "Not set";
 
-        return [
-            ["Daily Caffeine Limit",  limitMg.toString() + "mg"],
-            ["Caffeine Half-Life",    halfLife.format("%.1f") + " hrs"],
-            ["Sleep Threshold",       sleepMg.toString() + "mg in system"],
-            ["Bedtime",               bedtimeStr],
-            ["Oops Threshold",        oopsStr],
-            ["Reset Today's Log",     "Tap to clear"]
-        ] as Array<Array>;
+        var modelStr = absModel == 0 ? "Instant"
+                     : absModel == 1 ? "Standard"
+                     : "Precision";
+
+        var items = [] as Array<Array>;
+        items.add(["Daily Caffeine Limit",  limitMg.toString() + "mg",          ITEM_LIMIT]        as Array);
+        items.add(["Caffeine Half-Life",    halfLife.format("%.1f") + " hrs",   ITEM_HALF_LIFE]    as Array);
+        items.add(["Sleep Threshold",       sleepMg.toString() + "mg in system", ITEM_SLEEP_MG]    as Array);
+        items.add(["Bedtime",               bedtimeStr,                          ITEM_BEDTIME]      as Array);
+        items.add(["Oops Threshold",        oopsStr,                             ITEM_OOPS]         as Array);
+        items.add(["Absorption Model",      modelStr,                            ITEM_ABSORPTION_MODEL] as Array);
+        if (absModel == 1) {
+            var fsStr = stdFood == 0 ? "Fasted"
+                      : stdFood == 2 ? "With Food"
+                      : "Typical";
+            items.add(["Absorption Profile", fsStr, ITEM_STANDARD_FOOD] as Array);
+        }
+        items.add(["Reset Today's Log",     "Tap to clear",                      ITEM_RESET_TODAY]  as Array);
+        return items;
     }
 
     function rowForTapY(tapY as Number) as Number {
@@ -157,33 +175,47 @@ class SettingsDelegate extends WatchUi.BehaviorDelegate {
         var rowIdx = _view.rowForTapY(tapY);
         if (rowIdx < 0) { return false; }
 
-        if (rowIdx == SettingsView.ITEM_LIMIT) {
-            // Step 10mg (was 50)
+        // Dispatch on typeId (3rd element) rather than index so conditional
+        // rows (e.g. Absorption Profile) are handled correctly.
+        var items  = _view._buildItems();
+        var typeId = (items[rowIdx] as Array)[2] as Number;
+
+        if (typeId == SettingsView.ITEM_LIMIT) {
             _pushNumberEditor("Daily Limit (mg)", _settings["limitMg"] as Number,
                 100, 2000, 10, method(:onLimitPicked));
-        } else if (rowIdx == SettingsView.ITEM_HALF_LIFE) {
+        } else if (typeId == SettingsView.ITEM_HALF_LIFE) {
             var tenths = ((_settings["halfLifeHrs"] as Float) * 10.0f).toNumber();
             _pushNumberEditor("Half-Life (x0.1 hrs)", tenths, 10, 120, 1,
                 method(:onHalfLifePicked));
-        } else if (rowIdx == SettingsView.ITEM_SLEEP_MG) {
+        } else if (typeId == SettingsView.ITEM_SLEEP_MG) {
             _pushNumberEditor("Sleep Threshold (mg)", _settings["sleepThresholdMg"] as Number,
                 0, 400, 10, method(:onSleepMgPicked));
-        } else if (rowIdx == SettingsView.ITEM_BEDTIME) {
-            // HH:MM picker instead of raw minutes
-            var mins     = _settings["bedtimeMinutes"] as Number;
-            var bedView  = new BedtimeEditView(mins);
+        } else if (typeId == SettingsView.ITEM_BEDTIME) {
+            var mins    = _settings["bedtimeMinutes"] as Number;
+            var bedView = new BedtimeEditView(mins);
             WatchUi.pushView(
                 bedView,
                 new BedtimeEditDelegate(bedView, _settings, _view),
                 WatchUi.SLIDE_LEFT
             );
-        } else if (rowIdx == SettingsView.ITEM_OOPS) {
-            // Adjust threshold like Sleep Threshold (was a clear-confirmation)
-            var oopsMg = _settings["oopsThresholdMg"];
+        } else if (typeId == SettingsView.ITEM_OOPS) {
+            var oopsMg  = _settings["oopsThresholdMg"];
             var initial = oopsMg != null ? (oopsMg as Float).toNumber() : 100;
             _pushNumberEditor("Oops Threshold (mg)", initial,
                 0, 500, 10, method(:onOopsPicked));
-        } else if (rowIdx == SettingsView.ITEM_RESET_TODAY) {
+        } else if (typeId == SettingsView.ITEM_ABSORPTION_MODEL) {
+            // Tap cycles Instant → Standard → Precision → Instant
+            var cur = _settings.hasKey("absorptionModel") ? _settings["absorptionModel"] as Number : 0;
+            _settings["absorptionModel"] = (cur + 1) % 3;
+            StimTrackerStorage.saveSettings(_settings);
+            WatchUi.requestUpdate();
+        } else if (typeId == SettingsView.ITEM_STANDARD_FOOD) {
+            // Tap cycles Fasted → Typical → With Food → Fasted
+            var cur = _settings.hasKey("standardFoodState") ? _settings["standardFoodState"] as Number : 1;
+            _settings["standardFoodState"] = (cur + 1) % 3;
+            StimTrackerStorage.saveSettings(_settings);
+            WatchUi.requestUpdate();
+        } else if (typeId == SettingsView.ITEM_RESET_TODAY) {
             var confirm = new WatchUi.Confirmation("Clear today's log?");
             WatchUi.pushView(confirm, new ResetTodayDelegate(), WatchUi.SLIDE_UP);
         }

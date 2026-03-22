@@ -2,4 +2,10 @@
 <resources>
     <bitmap id="LauncherIcon" filename="launcher_icon.png"/>
     <bitmap id="OopsHeart" filename="oops_heart.png"/>
+    <bitmap id="GearIcon" filename="gear_icon.png" dithering="none">
+        <palette disableTransparency="false">
+            <color>FFFFFF</color>
+        </palette>
+    </bitmap>
+    <bitmap id="ComplicationIcon" filename="complication_icon.svg"/>
 </resources>

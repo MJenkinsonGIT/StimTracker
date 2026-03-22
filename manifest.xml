@@ -15,6 +15,7 @@
 
         <iq:permissions>
             <iq:uses-permission id="UserProfile"/>
+            <iq:uses-permission id="ComplicationPublisher"/>
         </iq:permissions>
 
         <iq:languages>

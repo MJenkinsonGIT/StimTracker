@@ -52,7 +52,6 @@ class LogStimulantView extends WatchUi.View {
             var y = LIST_TOP + i * ROW_H;
 
             if (rowIdx == 0) {
-                // ── Misc row ─────────────────────────────────────────────
                 dc.setColor(0x00AAAA, Graphics.COLOR_TRANSPARENT);
                 dc.drawText(CX, y + 20, Graphics.FONT_XTINY, "Misc",
                     Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
@@ -61,7 +60,6 @@ class LogStimulantView extends WatchUi.View {
                     Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
             } else if (rowIdx <= _profiles.size()) {
-                // ── Profile row ───────────────────────────────────────────
                 var p         = _profiles[rowIdx - 1] as Dictionary;
                 var name      = p["name"] as String;
                 var caffMg    = p["caffeineMg"] as Number;
@@ -92,7 +90,6 @@ class LogStimulantView extends WatchUi.View {
                     Graphics.TEXT_JUSTIFY_LEFT | Graphics.TEXT_JUSTIFY_VCENTER);
 
             } else {
-                // ── Add New row ───────────────────────────────────────────
                 dc.setColor(Graphics.COLOR_BLUE, Graphics.COLOR_TRANSPARENT);
                 dc.drawText(CX, y + ROW_H / 2, Graphics.FONT_XTINY,
                     "+ Add New Stimulant",
@@ -103,7 +100,6 @@ class LogStimulantView extends WatchUi.View {
             dc.drawLine(40, y + ROW_H - 2, 414, y + ROW_H - 2);
         }
 
-        // Scroll arrows
         if (_scrollPos > 0) {
             ArrowUtils.drawUpArrow(dc, CX, 79, ArrowUtils.HINT_ARROW_SIZE,
                 Graphics.COLOR_LT_GRAY);
@@ -114,8 +110,6 @@ class LogStimulantView extends WatchUi.View {
         }
     }
 
-    // Map tap Y to row index.
-    // 0 = Misc, 1..n = profiles, n+1 = Add New, -1 = outside list.
     function rowForTapY(tapY as Number) as Number {
         if (tapY < LIST_TOP || tapY >= LIST_BOT) { return -1; }
         var relY      = tapY - LIST_TOP;
@@ -191,7 +185,7 @@ class LogStimulantDelegate extends WatchUi.BehaviorDelegate {
 
         if (rowIdx == 0) {
             // Misc quick-log
-            var miscView = new MiscCaffeineView();
+            var miscView = new MiscCaffeineView(_settings);
             WatchUi.pushView(
                 miscView,
                 new MiscCaffeineDelegate(miscView, _settings, _view),
@@ -225,11 +219,9 @@ class LogStimulantDelegate extends WatchUi.BehaviorDelegate {
         var rowIdx   = _view.rowForTapY(tapY);
         var profiles = _view.getProfiles();
 
-        // Only respond to long-press on real profile rows (not Misc, not Add New)
         if (rowIdx <= 0 || rowIdx > profiles.size()) { return false; }
 
         var profile  = profiles[rowIdx - 1] as Dictionary;
-        // rowIdx 1..n → array index (rowIdx-1), sort order = rowIdx
         var profView = new ProfileEditView(profile, _settings, rowIdx, profiles.size());
         WatchUi.pushView(
             profView,
@@ -268,8 +260,6 @@ class MiscCaffTextPickerDelegate extends WatchUi.TextPickerDelegate {
 }
 
 // ── Delete Confirmation Delegate ─────────────────────────────────────────────
-// Used by EditStimulantDelegate for "Add New" delete path (unused currently,
-// but kept for safety). Profile-edit deletes use ProfileDeleteDelegate.
 
 class DeleteConfirmDelegate extends WatchUi.ConfirmationDelegate {
 
@@ -293,36 +283,54 @@ class DeleteConfirmDelegate extends WatchUi.ConfirmationDelegate {
 }
 
 // ── Misc Caffeine View ────────────────────────────────────────────────────────
-// Quick-log screen for one-off caffeine amounts.
-// User sets mg with +/-, taps Preview to go straight to the confirm screen.
-// Nothing is saved to profiles.
 
 class MiscCaffeineView extends WatchUi.View {
 
     private const CX = 227;
 
-    var _caffMg as Number;
+    var _caffMg   as Number;
+    var _doseType  as String;
+    var _settings  as Dictionary;
+    var _gearBmp   as WatchUi.BitmapResource;
 
-    function initialize() {
+    function initialize(settings as Dictionary) {
         View.initialize();
-        _caffMg = 100;
+        _caffMg   = 100;
+        _doseType = "drink";
+        _settings = settings;
+        _gearBmp  = WatchUi.loadResource(Rez.Drawables.GearIcon) as WatchUi.BitmapResource;
     }
 
     function onUpdate(dc as Graphics.Dc) as Void {
         dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
         dc.clear();
 
-        // ── Title ─────────────────────────────────────────────────────────
+        // Title
         dc.setColor(0x00AAAA, Graphics.COLOR_TRANSPARENT);
         dc.drawText(CX, 35, Graphics.FONT_XTINY, "Misc Quick Log",
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
-        // ── Label ─────────────────────────────────────────────────────────
-        dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(CX, 90, Graphics.FONT_XTINY, "How much caffeine?",
+        // Gear icon (Parameters) -- right bezel, same row as title
+        dc.drawBitmap(395 - _gearBmp.getWidth() / 2, 35 - _gearBmp.getHeight() / 2, _gearBmp);
+
+        // Dose type cycling button (Drink / Pill) -- greyed out in Instant model
+        var instant = (_settings["absorptionModel"] as Number) == 0;
+        var typeColor = instant ? 0x444444
+                      : _doseType.equals("drink") ? 0x003388 : 0x885500;
+        dc.setColor(typeColor, Graphics.COLOR_TRANSPARENT);
+        dc.fillRoundedRectangle(147, 64, 160, 36, 10);
+        dc.setColor(instant ? Graphics.COLOR_DK_GRAY : Graphics.COLOR_WHITE,
+                    Graphics.COLOR_TRANSPARENT);
+        dc.drawText(CX, 82, Graphics.FONT_XTINY,
+            _doseType.equals("drink") ? "Drink" : "Pill",
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
-        // ── mg value ──────────────────────────────────────────────────────
+        // Label
+        dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(CX, 130, Graphics.FONT_XTINY, "How much caffeine?",
+            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+
+        // mg value
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
         dc.drawText(CX, 150, Graphics.FONT_NUMBER_MEDIUM, _caffMg.toString(),
             Graphics.TEXT_JUSTIFY_CENTER);
@@ -331,21 +339,21 @@ class MiscCaffeineView extends WatchUi.View {
         dc.drawText(CX, 255, Graphics.FONT_XTINY, "mg",
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
-        // ── +/- buttons ───────────────────────────────────────────────────
+        // +/- buttons
         dc.setColor(Graphics.COLOR_BLUE, Graphics.COLOR_TRANSPARENT);
         dc.drawText(90, 142, Graphics.FONT_NUMBER_MEDIUM, "-",
             Graphics.TEXT_JUSTIFY_CENTER);
         dc.drawText(364, 142, Graphics.FONT_NUMBER_MEDIUM, "+",
             Graphics.TEXT_JUSTIFY_CENTER);
 
-        // ── Preview button ────────────────────────────────────────────────
+        // Preview button
         dc.setColor(0x007700, Graphics.COLOR_TRANSPARENT);
         dc.fillRoundedRectangle(107, 288, 240, 50, 10);
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
         dc.drawText(CX, 313, Graphics.FONT_XTINY, "Preview",
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
-        // ── Cancel bar ────────────────────────────────────────────────────
+        // Cancel bar
         dc.setColor(0x333333, Graphics.COLOR_TRANSPARENT);
         dc.fillRectangle(0, 380, dc.getWidth(), 23);
         ArrowUtils.drawDownArrow(dc, CX - 49, 391, ArrowUtils.HINT_ARROW_SIZE,
@@ -353,6 +361,22 @@ class MiscCaffeineView extends WatchUi.View {
         dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
         dc.drawText(CX - 35, 391, Graphics.FONT_XTINY, "Cancel",
             Graphics.TEXT_JUSTIFY_LEFT | Graphics.TEXT_JUSTIFY_VCENTER);
+    }
+
+    // Gear tap -- centred on (395, 35), r=14
+    function isGearTap(tapX as Number, tapY as Number) as Boolean {
+        return tapX >= 355 && tapX <= 435 && tapY >= 15 && tapY <= 55;
+    }
+
+    // Dose type button tap -- ignored when Instant absorption model is active
+    function isDoseTypeTap(tapX as Number, tapY as Number) as Boolean {
+        if ((_settings["absorptionModel"] as Number) == 0) { return false; }
+        return tapX >= 147 && tapX <= 307 && tapY >= 64 && tapY <= 100;
+    }
+
+    function cycleDoseType() as Void {
+        _doseType = _doseType.equals("drink") ? "pill" : "drink";
+        WatchUi.requestUpdate();
     }
 
     function isMinusTap(tapX as Number, tapY as Number) as Boolean {
@@ -386,9 +410,10 @@ class MiscCaffeineView extends WatchUi.View {
 
 class MiscCaffeineDelegate extends WatchUi.BehaviorDelegate {
 
-    private var _view     as MiscCaffeineView;
-    private var _settings as Dictionary;
-    private var _listView as LogStimulantView;
+    private var _view       as MiscCaffeineView;
+    private var _settings   as Dictionary;
+    private var _listView   as LogStimulantView;
+    private var _paramsView as MiscParamsView;
 
     function initialize(view as MiscCaffeineView, settings as Dictionary,
                         listView as LogStimulantView) {
@@ -396,11 +421,23 @@ class MiscCaffeineDelegate extends WatchUi.BehaviorDelegate {
         _view     = view;
         _settings = settings;
         _listView = listView;
+        _paramsView = new MiscParamsView("drink", 1, settings);
     }
 
     function onBack() as Boolean {
         WatchUi.popView(WatchUi.SLIDE_RIGHT);
         return true;
+    }
+
+    // Top button (KEY_ENTER) opens the same params screen as the gear icon.
+    function onKey(evt as WatchUi.KeyEvent) as Boolean {
+        if (evt.getKey() == WatchUi.KEY_ENTER) {
+            WatchUi.pushView(_paramsView,
+                new MiscParamsDelegate(_paramsView, _settings),
+                WatchUi.SLIDE_LEFT);
+            return true;
+        }
+        return false;
     }
 
     function onPreviousPage() as Boolean {
@@ -412,6 +449,18 @@ class MiscCaffeineDelegate extends WatchUi.BehaviorDelegate {
         var coords = evt.getCoordinates();
         var tapX   = coords[0];
         var tapY   = coords[1];
+
+        if (_view.isDoseTypeTap(tapX, tapY)) {
+            _view.cycleDoseType();
+            return true;
+        }
+
+        if (_view.isGearTap(tapX, tapY)) {
+            WatchUi.pushView(_paramsView,
+                new MiscParamsDelegate(_paramsView, _settings),
+                WatchUi.SLIDE_LEFT);
+            return true;
+        }
 
         if (_view.isMinusTap(tapX, tapY)) {
             _view.decrementMg();
@@ -437,7 +486,9 @@ class MiscCaffeineDelegate extends WatchUi.BehaviorDelegate {
             var miscProfile = {
                 "id"         => 0,
                 "name"       => "Misc",
-                "caffeineMg" => _view._caffMg
+                "caffeineMg" => _view._caffMg,
+                "type"       => _view._doseType,
+                "foodState"  => _paramsView._foodState
             } as Dictionary;
             var prevView = new PreviewView(miscProfile, _settings);
             WatchUi.pushView(

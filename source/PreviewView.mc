@@ -19,6 +19,7 @@ class PreviewView extends WatchUi.View {
     var _settings  as Dictionary;
     var _startSec  as Number;  // 0 = not set (use current time at log)
     var _finishSec as Number;  // 0 = not set (instant dose)
+    var _foodState as Number;  // per-dose food state for Precision mode (default Typical=1)
 
     function initialize(profile as Dictionary, settings as Dictionary) {
         View.initialize();
@@ -26,6 +27,10 @@ class PreviewView extends WatchUi.View {
         _settings  = settings;
         _startSec  = 0;
         _finishSec = 0;
+        // Default food state for Precision mode: global standardFoodState, else Typical
+        var model = settings.hasKey("absorptionModel") ? settings["absorptionModel"] as Number : 0;
+        _foodState = (model == 2 && settings.hasKey("standardFoodState"))
+            ? settings["standardFoodState"] as Number : 1;
     }
 
     function onUpdate(dc as Graphics.Dc) as Void {
@@ -125,11 +130,11 @@ class PreviewView extends WatchUi.View {
                 Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
         }
 
-        // ── Adjust Time button ────────────────────────────────────────────
+        // ── Dose Options button ───────────────────────────────────────────
         dc.setColor(0x880000, Graphics.COLOR_TRANSPARENT);
         dc.fillRoundedRectangle(107, 387, 240, 53, 10);
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(CX, 413, Graphics.FONT_XTINY, "Adjust Time",
+        dc.drawText(CX, 413, Graphics.FONT_XTINY, "Dose Options",
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
     }
 
@@ -160,6 +165,11 @@ class PreviewView extends WatchUi.View {
         WatchUi.requestUpdate();
     }
 
+    // Update per-dose food state (called by AdjustTimeDelegate).
+    function setFoodState(fs as Number) as Void {
+        _foodState = fs;
+    }
+
     // Format a Unix timestamp as "H:MMam/pm" in local time
     private function _fmtTimeSec(tsSec as Number) as String {
         var moment = new Time.Moment(tsSec);
@@ -174,8 +184,6 @@ class PreviewView extends WatchUi.View {
     }
 
     // Word-wrap name: if > 22 chars, split at last space at/before char 22.
-    // Lines spaced 27px apart for readability.
-    // Returns true if wrapping occurred (caller uses this to shift the warning).
     private function _drawWrappedName(dc as Graphics.Dc, name as String, y as Number) as Boolean {
         if (name.length() <= 22) {
             dc.drawText(CX, y, Graphics.FONT_XTINY, name,
@@ -225,7 +233,6 @@ class PreviewDelegate extends WatchUi.BehaviorDelegate {
         _listView = listView;
     }
 
-    // Short back press → return to log list
     function onBack() as Boolean {
         WatchUi.popView(WatchUi.SLIDE_DOWN);
         return true;
@@ -239,7 +246,6 @@ class PreviewDelegate extends WatchUi.BehaviorDelegate {
     // Hold back → Profile edit screen (real profiles only, not Misc id=0)
     function onMenu() as Boolean {
         if ((_profile["id"] as Number) == 0) { return false; }
-        // Find current array index so ProfileEditView knows the sort order
         var profiles   = _listView.getProfiles();
         var profileIdx = 0;
         var targetId   = _profile["id"] as Number;
@@ -270,7 +276,7 @@ class PreviewDelegate extends WatchUi.BehaviorDelegate {
         }
 
         if (_view.isAdjustTimeTap(tapX, tapY)) {
-            var atView = new AdjustTimeView();
+            var atView = new AdjustTimeView(_view._settings);
             WatchUi.pushView(
                 atView,
                 new AdjustTimeDelegate(atView, _view, _profile),
@@ -296,7 +302,25 @@ class PreviewDelegate extends WatchUi.BehaviorDelegate {
             finishSec = startSec;
         }
 
-        StimTrackerStorage.logDoseWithWindow(profileId, name, caffMg, startSec, finishSec);
+        // Get dose type from profile (migration default: "drink")
+        var doseType = (_profile as Dictionary).hasKey("type")
+            ? (_profile as Dictionary)["type"] as String : "drink";
+        var settings  = _view._settings;
+        var absModel  = settings.hasKey("absorptionModel")
+            ? settings["absorptionModel"] as Number : 0;
+        var foodState;
+        if (absModel == 1) {
+            // Standard: global food state
+            foodState = settings.hasKey("standardFoodState")
+                ? settings["standardFoodState"] as Number : 1;
+        } else if (absModel == 2) {
+            // Precision: per-dose food state set via Dose Options
+            foodState = _view._foodState;
+        } else {
+            foodState = 1;
+        }
+        StimTrackerStorage.logDoseWithWindow(profileId, name, caffMg, startSec, finishSec,
+            doseType, foodState);
 
         WatchUi.popView(WatchUi.SLIDE_DOWN);  // pop Preview
         WatchUi.popView(WatchUi.SLIDE_DOWN);  // pop LogStimulant (normal) or MiscCaffeine
@@ -319,6 +343,7 @@ class ProfileEditView extends WatchUi.View {
     var _originalSortOrder as Number;
     var _totalProfiles     as Number;
     var _sortOrderSelected as Boolean;
+    var _gearBmp           as WatchUi.BitmapResource;
 
     function initialize(profile as Dictionary, settings as Dictionary,
                         sortOrder as Number, totalProfiles as Number) {
@@ -330,18 +355,17 @@ class ProfileEditView extends WatchUi.View {
         _originalSortOrder = sortOrder;
         _totalProfiles     = totalProfiles;
         _sortOrderSelected = false;
+        _gearBmp           = WatchUi.loadResource(Rez.Drawables.GearIcon) as WatchUi.BitmapResource;
     }
 
     function onUpdate(dc as Graphics.Dc) as Void {
         dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
         dc.clear();
 
-        // ── Title ─────────────────────────────────────────────────────────
         dc.setColor(Graphics.COLOR_GREEN, Graphics.COLOR_TRANSPARENT);
         dc.drawText(CX, 30, Graphics.FONT_XTINY, "Edit Profile",
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
-        // ── Name field ────────────────────────────────────────────────────
         dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
         dc.drawText(CX, 60, Graphics.FONT_XTINY, "Name:",
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
@@ -349,7 +373,9 @@ class ProfileEditView extends WatchUi.View {
         dc.drawText(CX, 88, Graphics.FONT_XTINY, _name,
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
-        // ── Sort Order widget ─────────────────────────────────────────────
+        // Gear icon (Parameters) -- right bezel, between name and sort order
+        dc.drawBitmap(395 - _gearBmp.getWidth() / 2, 108 - _gearBmp.getHeight() / 2, _gearBmp);
+
         var arrowColor = _sortOrderSelected
             ? Graphics.COLOR_GREEN
             : Graphics.COLOR_DK_GRAY;
@@ -366,7 +392,6 @@ class ProfileEditView extends WatchUi.View {
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
         ArrowUtils.drawDownArrow(dc, CX, 202, ArrowUtils.HINT_ARROW_SIZE, arrowColor);
 
-        // ── Caffeine mg field ─────────────────────────────────────────────
         dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
         dc.drawText(CX, 225, Graphics.FONT_XTINY, "Caffeine (mg):",
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
@@ -374,21 +399,18 @@ class ProfileEditView extends WatchUi.View {
         dc.drawText(CX, 219, Graphics.FONT_NUMBER_MEDIUM, _caffMg.toString(),
             Graphics.TEXT_JUSTIFY_CENTER);
 
-        // +/- buttons
         dc.setColor(Graphics.COLOR_BLUE, Graphics.COLOR_TRANSPARENT);
         dc.drawText(110, 220, Graphics.FONT_NUMBER_MEDIUM, "-",
             Graphics.TEXT_JUSTIFY_CENTER);
         dc.drawText(344, 220, Graphics.FONT_NUMBER_MEDIUM, "+",
             Graphics.TEXT_JUSTIFY_CENTER);
 
-        // ── Save button ───────────────────────────────────────────────────
         dc.setColor(0x007700, Graphics.COLOR_TRANSPARENT);
         dc.fillRoundedRectangle(107, 308, 240, 50, 10);
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
         dc.drawText(CX, 333, Graphics.FONT_XTINY, "Save",
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
-        // ── Delete button ─────────────────────────────────────────────────
         dc.setColor(0x880000, Graphics.COLOR_TRANSPARENT);
         dc.fillRoundedRectangle(107, 368, 240, 50, 10);
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
@@ -398,6 +420,11 @@ class ProfileEditView extends WatchUi.View {
 
     function isNameTap(tapX as Number, tapY as Number) as Boolean {
         return tapY >= 68 && tapY <= 120;
+    }
+
+    // Gear tap -- centred on (395, 108), r=14 → 40px touch target
+    function isGearTap(tapX as Number, tapY as Number) as Boolean {
+        return tapX >= 355 && tapX <= 435 && tapY >= 88 && tapY <= 128;
     }
 
     function isSortOrderTap(tapX as Number, tapY as Number) as Boolean {
@@ -456,10 +483,6 @@ class ProfileEditView extends WatchUi.View {
 }
 
 // ── Profile Edit Delegate ─────────────────────────────────────────────────────
-// _fromPreview = true  → called from PreviewDelegate.onMenu (hold-back)
-//                        save refreshes preview; delete pops 3 → back to Main
-// _fromPreview = false → called from list long-press
-//                        save refreshes list only; delete pops 2 → back to Main
 
 class ProfileEditDelegate extends WatchUi.BehaviorDelegate {
 
@@ -468,6 +491,8 @@ class ProfileEditDelegate extends WatchUi.BehaviorDelegate {
     private var _previewView as PreviewView or Null;
     private var _listView    as LogStimulantView;
     private var _fromPreview as Boolean;
+    private var _paramsView  as ProfileParamsView;
+    private var _settings    as Dictionary;
 
     function initialize(view as ProfileEditView, profile as Dictionary,
                         settings as Dictionary, previewView as PreviewView or Null,
@@ -475,9 +500,13 @@ class ProfileEditDelegate extends WatchUi.BehaviorDelegate {
         BehaviorDelegate.initialize();
         _view        = view;
         _profile     = profile;
+        _settings    = settings;
         _previewView = previewView;
         _listView    = listView;
         _fromPreview = fromPreview;
+        var profileType = (profile as Dictionary).hasKey("type")
+            ? (profile as Dictionary)["type"] as String : "drink";
+        _paramsView = new ProfileParamsView(profileType, settings);
     }
 
     function onBack() as Boolean {
@@ -485,22 +514,39 @@ class ProfileEditDelegate extends WatchUi.BehaviorDelegate {
         return true;
     }
 
-    // Swipe UP → increment sort order when field is selected
-    function onNextPage() as Boolean {
-        if (_view._sortOrderSelected) { _view.incrementSortOrder(); }
-        return true;  // always consume
+    // Top button (KEY_ENTER) opens the same params screen as the gear icon.
+    function onKey(evt as WatchUi.KeyEvent) as Boolean {
+        if (evt.getKey() == WatchUi.KEY_ENTER) {
+            WatchUi.pushView(_paramsView,
+                new ProfileParamsDelegate(_paramsView, _settings),
+                WatchUi.SLIDE_LEFT);
+            return true;
+        }
+        return false;
     }
 
-    // Swipe DOWN → decrement sort order when field is selected; back button = cancel
+    function onNextPage() as Boolean {
+        if (_view._sortOrderSelected) { _view.incrementSortOrder(); }
+        return true;
+    }
+
     function onPreviousPage() as Boolean {
         if (_view._sortOrderSelected) { _view.decrementSortOrder(); }
-        return true;  // always consume
+        return true;
     }
 
     function onTap(evt as WatchUi.ClickEvent) as Boolean {
         var coords = evt.getCoordinates();
         var tapX   = coords[0];
         var tapY   = coords[1];
+
+        // Gear checked before name: both share the y=88-120 zone.
+        if (_view.isGearTap(tapX, tapY)) {
+            WatchUi.pushView(_paramsView,
+                new ProfileParamsDelegate(_paramsView, _settings),
+                WatchUi.SLIDE_LEFT);
+            return true;
+        }
 
         if (_view.isSortOrderTap(tapX, tapY)) {
             _view.selectSortOrder();
@@ -557,15 +603,13 @@ class ProfileEditDelegate extends WatchUi.BehaviorDelegate {
         var oldIdx = _view._originalSortOrder - 1;
         var newIdx = _view._sortOrder - 1;
 
-        // Apply sort order change first (array-position reorder)
         if (oldIdx != newIdx) {
             StimTrackerStorage.reorderProfile(oldIdx, newIdx);
         }
-        // Update name / caffeine (finds by ID, safe after reorder)
-        var updated = StimTrackerStorage.updateProfile(id, _view._name, _view._caffMg);
+        var updated = StimTrackerStorage.updateProfile(id, _view._name, _view._caffMg,
+            _paramsView._type);
         _listView.refreshProfiles(updated);
 
-        // Refresh preview behind us if we came from there
         if (_previewView != null) {
             _profile["name"]       = _view._name;
             _profile["caffeineMg"] = _view._caffMg;
@@ -576,7 +620,7 @@ class ProfileEditDelegate extends WatchUi.BehaviorDelegate {
     }
 }
 
-// ── Profile Name Picker Delegate ──────────────────────────────────────────────
+// ── Profile Picker Delegates ──────────────────────────────────────────────────
 
 class ProfileCaffTextPickerDelegate extends WatchUi.TextPickerDelegate {
 
@@ -625,8 +669,6 @@ class ProfileNamePickerDelegate extends WatchUi.TextPickerDelegate {
 }
 
 // ── Profile Delete Delegate ───────────────────────────────────────────────────
-// _fromPreview = true  → stack is Main/LogStimulant/Preview/ProfileEdit → pop 3
-// _fromPreview = false → stack is Main/LogStimulant/ProfileEdit          → pop 2
 
 class ProfileDeleteDelegate extends WatchUi.ConfirmationDelegate {
 
@@ -645,10 +687,10 @@ class ProfileDeleteDelegate extends WatchUi.ConfirmationDelegate {
         if (response == WatchUi.CONFIRM_YES) {
             var updated = StimTrackerStorage.deleteProfile(_profileId);
             _listView.refreshProfiles(updated);
-            WatchUi.popView(WatchUi.SLIDE_DOWN);  // pop ProfileEdit
-            WatchUi.popView(WatchUi.SLIDE_DOWN);  // pop Preview (fromPreview) or LogStimulant
+            WatchUi.popView(WatchUi.SLIDE_DOWN);
+            WatchUi.popView(WatchUi.SLIDE_DOWN);
             if (_fromPreview) {
-                WatchUi.popView(WatchUi.SLIDE_DOWN);  // also pop LogStimulant
+                WatchUi.popView(WatchUi.SLIDE_DOWN);
             }
         } else {
             WatchUi.popView(WatchUi.SLIDE_DOWN);
@@ -658,51 +700,50 @@ class ProfileDeleteDelegate extends WatchUi.ConfirmationDelegate {
 }
 
 // ── Adjust Time View ──────────────────────────────────────────────────────────
-// Two HH:MM pickers side by side (Start and Finish).
-// Tap a column to select it. Swipe up/down increments/decrements the selection.
-// Start Recording button starts live recording (saves pending dose, pops to main screen).
-// Back applies the chosen times to the PreviewView.
 
 class AdjustTimeView extends WatchUi.View {
 
     private const CX = 227;
 
-    // Column x-centres for the four digit fields
-    private const X_SH = 40;   // Start Hours
-    private const X_SM = 112;  // Start Minutes
-    private const X_SC = 76;   // Start colon x-centre
-    private const X_FH = 336;  // Finish Hours
-    private const X_FM = 408;  // Finish Minutes
-    private const X_FC = 372;  // Finish colon x-centre
+    private const X_SH = 40;
+    private const X_SM = 112;
+    private const X_SC = 76;
+    private const X_FH = 336;
+    private const X_FM = 408;
+    private const X_FC = 372;
 
-    // Row y-centres
     private const Y_UP     = 162;
     private const Y_NUM    = 207;
     private const Y_DOWN   = 252;
     private const Y_LABEL  = 280;
     private const Y_RECORD = 361;
 
-    var _startH  as Number;
-    var _startM  as Number;
-    var _finishH as Number;
-    var _finishM as Number;
-    var _sel     as Number;  // 0=StartH 1=StartM 2=FinishH 3=FinishM
+    var _startH    as Number;
+    var _startM    as Number;
+    var _finishH   as Number;
+    var _finishM   as Number;
+    var _sel       as Number;
+    var _foodState as Number;
+    var _settings  as Dictionary;
 
-    function initialize() {
+    function initialize(settings as Dictionary) {
         View.initialize();
-        var clock = System.getClockTime();
-        _startH  = clock.hour;
-        _startM  = clock.min;
-        _finishH = clock.hour;
-        _finishM = clock.min;
-        _sel = 0;
+        var clock  = System.getClockTime();
+        _startH    = clock.hour;
+        _startM    = clock.min;
+        _finishH   = clock.hour;
+        _finishM   = clock.min;
+        _sel       = 0;
+        _settings  = settings;
+        var model  = settings.hasKey("absorptionModel") ? settings["absorptionModel"] as Number : 0;
+        _foodState = (model == 2 && settings.hasKey("standardFoodState"))
+            ? settings["standardFoodState"] as Number : 1;
     }
 
     function onUpdate(dc as Graphics.Dc) as Void {
         dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
         dc.clear();
 
-        // ── Header ───────────────────────────────────────────────────────
         dc.setColor(Graphics.COLOR_GREEN, Graphics.COLOR_TRANSPARENT);
         dc.drawText(CX, 75, Graphics.FONT_XTINY, "Set Start & Finish times,",
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
@@ -710,19 +751,16 @@ class AdjustTimeView extends WatchUi.View {
         dc.drawText(CX, 100, Graphics.FONT_XTINY, "or tap to begin Recording",
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
-        // ── Selected field highlight ──────────────────────────────────────
         var selXArr = [X_SH, X_SM, X_FH, X_FM] as Array<Number>;
         var selX    = selXArr[_sel] as Number;
         dc.setColor(0x003300, Graphics.COLOR_TRANSPARENT);
         dc.fillRoundedRectangle(selX - 28, Y_NUM - 26, 56, 52, 8);
 
-        // ── Up arrows ────────────────────────────────────────────────────
         ArrowUtils.drawUpArrow(dc, X_SH, Y_UP, ArrowUtils.HINT_ARROW_SIZE, Graphics.COLOR_LT_GRAY);
         ArrowUtils.drawUpArrow(dc, X_SM, Y_UP, ArrowUtils.HINT_ARROW_SIZE, Graphics.COLOR_LT_GRAY);
         ArrowUtils.drawUpArrow(dc, X_FH, Y_UP, ArrowUtils.HINT_ARROW_SIZE, Graphics.COLOR_LT_GRAY);
         ArrowUtils.drawUpArrow(dc, X_FM, Y_UP, ArrowUtils.HINT_ARROW_SIZE, Graphics.COLOR_LT_GRAY);
 
-        // ── Time digits ──────────────────────────────────────────────────
         _drawNum(dc, X_SH, _startH,  _sel == 0);
         _drawNum(dc, X_SM, _startM,  _sel == 1);
         _drawNum(dc, X_FH, _finishH, _sel == 2);
@@ -734,32 +772,43 @@ class AdjustTimeView extends WatchUi.View {
         dc.drawText(X_FC, Y_NUM, Graphics.FONT_NUMBER_MILD, ":",
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
-        // ── Down arrows ───────────────────────────────────────────────────
         ArrowUtils.drawDownArrow(dc, X_SH, Y_DOWN, ArrowUtils.HINT_ARROW_SIZE, Graphics.COLOR_LT_GRAY);
         ArrowUtils.drawDownArrow(dc, X_SM, Y_DOWN, ArrowUtils.HINT_ARROW_SIZE, Graphics.COLOR_LT_GRAY);
         ArrowUtils.drawDownArrow(dc, X_FH, Y_DOWN, ArrowUtils.HINT_ARROW_SIZE, Graphics.COLOR_LT_GRAY);
         ArrowUtils.drawDownArrow(dc, X_FM, Y_DOWN, ArrowUtils.HINT_ARROW_SIZE, Graphics.COLOR_LT_GRAY);
 
-        // ── Section labels ────────────────────────────────────────────────
         dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
         dc.drawText(X_SC, Y_LABEL, Graphics.FONT_XTINY, "Start",
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
         dc.drawText(X_FC, Y_LABEL, Graphics.FONT_XTINY, "Finish",
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
-        // ── Save button (middle gap between the two time pickers) ─────────
+        // Food state cycling button (Precision mode only) -- above Save, y=155-189.
+        var doseModel = _settings.hasKey("absorptionModel")
+            ? _settings["absorptionModel"] as Number : 0;
+        if (doseModel == 2) {
+            var fsStr = _foodState == 0 ? "Fasted"
+                      : _foodState == 2 ? "With Food"
+                      : "Typical";
+            dc.setColor(0x004477, Graphics.COLOR_TRANSPARENT);
+            dc.fillRoundedRectangle(157, 140, 140, 64, 8);
+            dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
+            dc.drawText(CX, 172, Graphics.FONT_XTINY, fsStr,
+                Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+        }
+
+        // Save button -- original position
         dc.setColor(0x007700, Graphics.COLOR_TRANSPARENT);
         dc.fillRoundedRectangle(157, 235, 140, 66, 8);
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
         dc.drawText(CX, 268, Graphics.FONT_XTINY, "Save",
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
-        // ── "or" separator ────────────────────────────────────────────────
+        // "or" separator -- always shown between Save and Start Recording
         dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
         dc.drawText(CX, Y_RECORD - 39, Graphics.FONT_XTINY, "or",
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
-        // ── Start Recording button ────────────────────────────────────────
         dc.setColor(0x880000, Graphics.COLOR_TRANSPARENT);
         dc.fillRoundedRectangle(70, Y_RECORD - 10, 314, 72, 10);
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
@@ -791,32 +840,56 @@ class AdjustTimeView extends WatchUi.View {
         WatchUi.requestUpdate();
     }
 
-    // Tap within the picker rows selects a field
-    function selectFromTap(tapX as Number, tapY as Number) as Void {
-        if (tapY < Y_NUM - 26 || tapY > Y_NUM + 26) { return; }
+    function fieldForTap(tapX as Number, tapY as Number) as Number {
+        if (tapY < Y_NUM - 26 || tapY > Y_NUM + 26) { return -1; }
         if (tapX < 224) {
-            _sel = tapX < X_SC ? 0 : 1;
+            return tapX < X_SC ? 0 : 1;
         } else {
-            _sel = tapX < X_FC ? 2 : 3;
+            return tapX < X_FC ? 2 : 3;
         }
+    }
+
+    function selectFromTap(tapX as Number, tapY as Number) as Void {
+        var col = fieldForTap(tapX, tapY);
+        if (col >= 0) { _sel = col; WatchUi.requestUpdate(); }
+    }
+
+    function getFieldVal(col as Number) as Number {
+        if (col == 0) { return _startH; }
+        if (col == 1) { return _startM; }
+        if (col == 2) { return _finishH; }
+        return _finishM;
+    }
+
+    function setFieldVal(col as Number, val as Number) as Void {
+        if (col == 0)      { _startH  = val; }
+        else if (col == 1) { _startM  = val; }
+        else if (col == 2) { _finishH = val; }
+        else               { _finishM = val; }
         WatchUi.requestUpdate();
     }
 
+    // Save tap -- original fixed hitbox.
     function isSaveTap(tapX as Number, tapY as Number) as Boolean {
         return tapX >= 157 && tapX <= 297 && tapY >= 235 && tapY <= 301;
+    }
+
+    // Food state cycling button tap (Precision mode only) -- matches button at y=155-189.
+    function isFoodStateCycleTap(tapX as Number, tapY as Number) as Boolean {
+        var model = _settings.hasKey("absorptionModel")
+            ? _settings["absorptionModel"] as Number : 0;
+        if (model != 2) { return false; }
+        return tapX >= 157 && tapX <= 297 && tapY >= 140 && tapY <= 204;
     }
 
     function isRecordTap(tapY as Number) as Boolean {
         return tapY >= Y_RECORD - 10 && tapY <= Y_RECORD + 62;
     }
 
-    // Convert Start HH:MM to a Unix timestamp for today
     function getStartSec() as Number {
         return _todayAtHHMM(_startH, _startM);
     }
 
-    // Convert Finish HH:MM to a Unix timestamp.
-    // If finish < start (midnight wrap), add 86400.
     function getFinishSec() as Number {
         var s = _todayAtHHMM(_startH,  _startM);
         var f = _todayAtHHMM(_finishH, _finishM);
@@ -824,8 +897,6 @@ class AdjustTimeView extends WatchUi.View {
         return f;
     }
 
-    // Compute Unix timestamp for H:M today in local time.
-    // Uses clock delta to avoid Gregorian.moment() UTC/local ambiguity.
     private function _todayAtHHMM(h as Number, m as Number) as Number {
         var clock   = System.getClockTime();
         var nowSec  = Time.now().value().toNumber();
@@ -850,22 +921,33 @@ class AdjustTimeDelegate extends WatchUi.BehaviorDelegate {
         _profile     = profile;
     }
 
-    // Swipe UP → increment selected field
     function onNextPage() as Boolean {
         _view.increment();
         return true;
     }
 
-    // Swipe DOWN → decrement selected field
     function onPreviousPage() as Boolean {
         _view.decrement();
         return true;
     }
 
-    // Back → apply times to PreviewView and return
     function onBack() as Boolean {
         _previewView.setTimings(_view.getStartSec(), _view.getFinishSec());
+        _previewView.setFoodState(_view._foodState);
         WatchUi.popView(WatchUi.SLIDE_RIGHT);
+        return true;
+    }
+
+    function onHold(evt as WatchUi.ClickEvent) as Boolean {
+        var coords = evt.getCoordinates();
+        var col    = _view.fieldForTap(coords[0], coords[1]);
+        if (col < 0) { return false; }
+        var isHour = (col == 0 || col == 2);
+        WatchUi.pushView(
+            new WatchUi.TextPicker(_view.getFieldVal(col).toString()),
+            new AdjustTimeFieldPickerDelegate(_view, col, isHour),
+            WatchUi.SLIDE_UP
+        );
         return true;
     }
 
@@ -874,20 +956,27 @@ class AdjustTimeDelegate extends WatchUi.BehaviorDelegate {
         var tapX   = coords[0];
         var tapY   = coords[1];
 
+        if (_view.isFoodStateCycleTap(tapX, tapY)) {
+            _view._foodState = (_view._foodState + 1) % 3;
+            WatchUi.requestUpdate();
+            return true;
+        }
+
         if (_view.isSaveTap(tapX, tapY)) {
             _previewView.setTimings(_view.getStartSec(), _view.getFinishSec());
+            _previewView.setFoodState(_view._foodState);
             WatchUi.popView(WatchUi.SLIDE_RIGHT);
             return true;
         }
 
         if (_view.isRecordTap(tapY)) {
-            // Save pending dose with start = now, then pop to main screen
             var profileId = _profile["id"]        as Number;
             var name      = _profile["name"]       as String;
             var caffMg    = _profile["caffeineMg"] as Number;
-            var nowSec    = Time.now().value().toNumber();
-            StimTrackerStorage.savePendingDose(profileId, name, caffMg, nowSec);
-            // Pop AdjustTime → Preview → LogStimulant → back at Main
+            var startSec  = _view.getStartSec();
+            var pType = (_profile as Dictionary).hasKey("type")
+                ? (_profile as Dictionary)["type"] as String : "drink";
+            StimTrackerStorage.savePendingDose(profileId, name, caffMg, startSec, pType, _view._foodState);
             WatchUi.popView(WatchUi.SLIDE_DOWN);
             WatchUi.popView(WatchUi.SLIDE_DOWN);
             WatchUi.popView(WatchUi.SLIDE_DOWN);
@@ -895,6 +984,37 @@ class AdjustTimeDelegate extends WatchUi.BehaviorDelegate {
         }
 
         _view.selectFromTap(tapX, tapY);
+        return true;
+    }
+}
+
+// ── Adjust Time Field Text Picker Delegate ────────────────────────────────────
+
+class AdjustTimeFieldPickerDelegate extends WatchUi.TextPickerDelegate {
+
+    private var _view   as AdjustTimeView;
+    private var _col    as Number;
+    private var _isHour as Boolean;
+
+    function initialize(view as AdjustTimeView, col as Number, isHour as Boolean) {
+        TextPickerDelegate.initialize();
+        _view   = view;
+        _col    = col;
+        _isHour = isHour;
+    }
+
+    function onTextEntered(text as String, changed as Boolean) as Boolean {
+        var num = text.toNumber();
+        if (num != null) {
+            var max = _isHour ? 23 : 59;
+            if (num < 0)   { num = 0; }
+            if (num > max) { num = max; }
+            _view.setFieldVal(_col, num);
+        }
+        return true;
+    }
+
+    function onCancel() as Boolean {
         return true;
     }
 }

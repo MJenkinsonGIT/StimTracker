@@ -2,6 +2,7 @@
 // The status hub — shows current caffeine in system, today's total,
 // and sleep-safe time. Refreshes every time it is shown.
 
+import Toybox.Complications;
 import Toybox.WatchUi;
 import Toybox.Graphics;
 import Toybox.Lang;
@@ -16,10 +17,12 @@ class MainView extends WatchUi.View {
 
     // Shared settings reference (updated by delegate when settings change)
     var _settings as Dictionary;
+    var _gearBmp  as WatchUi.BitmapResource;
 
     function initialize(settings as Dictionary) {
         View.initialize();
         _settings = settings;
+        _gearBmp  = WatchUi.loadResource(Rez.Drawables.GearIcon) as WatchUi.BitmapResource;
     }
 
     function onUpdate(dc as Graphics.Dc) as Void {
@@ -30,6 +33,14 @@ class MainView extends WatchUi.View {
         var totalMg   = StimTrackerStorage.calcTodayTotalMg();
         var currentMg = StimTrackerStorage.calcCurrentMg(_settings);
         var minsLeft  = StimTrackerStorage.minutesUntilSleepSafe(_settings);
+
+        // ── Publish complication ──────────────────────────────────────────
+        if (Complications has :updateComplication) {
+            Complications.updateComplication(0, {
+                :value => currentMg.toNumber(),
+                :unit  => "mg"
+            } as Complications.Data);
+        }
 
         // ── Large centre: current mg in system ───────────────────────────
         var currentRounded = currentMg.toNumber();
@@ -73,14 +84,9 @@ class MainView extends WatchUi.View {
                 Graphics.TEXT_JUSTIFY_CENTER);
         }
 
-        // ── Oops button (top-right) ────────────────────────────────────────
+        // ── Oops button (top-centre) and gear icon (top-right) ────────────
         _drawOopsButton(dc);
-
-        // ── Footer bar 1: Settings (circle-clipped, wider at this y) ─────────────
-        _fillCircularBar(dc, 355, 27, 0x333333);
-        dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(CX, 368, Graphics.FONT_XTINY, "Hold Back=Settings",
-            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+        dc.drawBitmap(378 - _gearBmp.getWidth() / 2, 117 - _gearBmp.getHeight() / 2, _gearBmp);
 
         // ── Footer bar 2: Log / History  —or—  Finish when recording ───────
         if (pending != null) {
@@ -207,6 +213,11 @@ class MainView extends WatchUi.View {
         return [206, 20, 248, 70] as Array<Number>;
     }
 
+    // Returns the tap region for the gear (Settings) button — [x1, y1, x2, y2]
+    function gearButtonRegion() as Array<Number> {
+        return [338, 97, 418, 137] as Array<Number>;
+    }
+
     // Expose pending dose state so delegate can react without re-loading storage
     function hasPendingDose() as Boolean {
         return StimTrackerStorage.loadPendingDose() != null;
@@ -250,15 +261,28 @@ class MainDelegate extends WatchUi.BehaviorDelegate {
         return true;
     }
 
-    // Menu button → Settings
+    // Top button (KEY_ENTER) or gear tap → Settings
+    function onKey(evt as WatchUi.KeyEvent) as Boolean {
+        if (evt.getKey() == WatchUi.KEY_ENTER) {
+            _openSettings();
+            return true;
+        }
+        return false;
+    }
+
+    // Long-press back (onMenu) also opens Settings as a fallback.
     function onMenu() as Boolean {
+        _openSettings();
+        return true;
+    }
+
+    private function _openSettings() as Void {
         var settingsView = new SettingsView(_settings);
         WatchUi.pushView(
             settingsView,
             new SettingsDelegate(settingsView, _settings, _view),
             WatchUi.SLIDE_LEFT
         );
-        return true;
     }
 
     // Tap: check Oops button or Finish Recording button
@@ -266,6 +290,14 @@ class MainDelegate extends WatchUi.BehaviorDelegate {
         var coords = evt.getCoordinates();
         var tapX   = coords[0];
         var tapY   = coords[1];
+
+        // Gear icon (top-right) → Settings
+        var gearRegion = _view.gearButtonRegion();
+        if (tapX >= gearRegion[0] && tapX <= gearRegion[2] &&
+            tapY >= gearRegion[1] && tapY <= gearRegion[3]) {
+            _openSettings();
+            return true;
+        }
 
         // Oops button (top-centre heart)
         var oopsRegion = _view.oopsButtonRegion();

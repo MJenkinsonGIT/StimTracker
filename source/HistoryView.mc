@@ -338,11 +338,15 @@ class DayDetailDelegate extends WatchUi.BehaviorDelegate {
         if (idx >= events.size()) { return false; }
         var evt2     = events[idx] as Dictionary;
 
-        var profiles = StimTrackerStorage.loadProfiles();
-        var editView = new DoseEditView(evt2, idx, _view._dateStr);
+        var profiles  = StimTrackerStorage.loadProfiles();
+        var settings  = StimTrackerStorage.loadSettings();
+        var doseType  = evt2.hasKey("type")      ? evt2["type"]      as String : "drink";
+        var foodState = evt2.hasKey("foodState") ? evt2["foodState"] as Number : 1;
+        var editView  = new DoseEditView(evt2, idx, _view._dateStr);
         WatchUi.pushView(
             editView,
-            new DoseEditDelegate(editView, idx, _view._dateStr, _view, profiles),
+            new DoseEditDelegate(editView, idx, _view._dateStr, _view, profiles,
+                                 settings, doseType, foodState),
             WatchUi.SLIDE_LEFT
         );
         return true;
@@ -388,9 +392,11 @@ class DoseEditView extends WatchUi.View {
     var _origStartM    as Number;
     var _origFinishH   as Number;
     var _origFinishM   as Number;
+    var _gearBmp as WatchUi.BitmapResource;
 
     function initialize(evt as Dictionary, idx as Number, dateStr as String) {
         View.initialize();
+        _gearBmp = WatchUi.loadResource(Rez.Drawables.GearIcon) as WatchUi.BitmapResource;
         _name   = evt["name"] as String;
         _caffMg = evt["caffeineMg"] as Number;
         _sel    = 0;
@@ -430,6 +436,9 @@ class DoseEditView extends WatchUi.View {
         // ── Name (tap to open profile picker) ─────────────────────────────
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
         _drawName(dc);
+
+        // Gear icon (Parameters) -- centred, below name field
+        dc.drawBitmap(CX - _gearBmp.getWidth() / 2, 120 - _gearBmp.getHeight() / 2, _gearBmp);
 
         // ── Selected time field highlight ──────────────────────────────────
         var selXArr = [X_SH, X_SM, X_FH, X_FM] as Array<Number>;
@@ -537,6 +546,11 @@ class DoseEditView extends WatchUi.View {
         return tapY >= 44 && tapY <= 97;  // covers single-line (60) and two-line (59+87)
     }
 
+    // Gear tap -- centred on (CX=227, 100), r=14 → 40px touch target
+    function isGearTap(tapX as Number, tapY as Number) as Boolean {
+        return tapX >= 187 && tapX <= 267 && tapY >= 100 && tapY <= 140;
+    }
+
     function isMinusTap(tapX as Number, tapY as Number) as Boolean {
         return tapX >= 20 && tapX <= 165 && tapY >= 230 && tapY <= 288;
     }
@@ -557,15 +571,35 @@ class DoseEditView extends WatchUi.View {
         return tapX >= 107 && tapX <= 347 && tapY >= 358 && tapY <= 423;
     }
 
+    // Returns column index (0=SH 1=SM 2=FH 3=FM) or -1 if outside digit row
+    function fieldForTap(tapX as Number, tapY as Number) as Number {
+        if (tapY < Y_NUM - 26 || tapY > Y_NUM + 26) { return -1; }
+        if (tapX < 224) {
+            return tapX < X_SC ? 0 : 1;
+        } else {
+            return tapX < X_FC ? 2 : 3;
+        }
+    }
+
+    function getFieldVal(col as Number) as Number {
+        if (col == 0) { return _startH; }
+        if (col == 1) { return _startM; }
+        if (col == 2) { return _finishH; }
+        return _finishM;
+    }
+
+    function setFieldVal(col as Number, val as Number) as Void {
+        if (col == 0)      { _startH  = val; }
+        else if (col == 1) { _startM  = val; }
+        else if (col == 2) { _finishH = val; }
+        else               { _finishM = val; }
+        WatchUi.requestUpdate();
+    }
+
     // Select a time column based on tap position within the digit row
     function selectFromTap(tapX as Number, tapY as Number) as Void {
-        if (tapY < Y_NUM - 26 || tapY > Y_NUM + 26) { return; }
-        if (tapX < 224) {
-            _sel = tapX < X_SC ? 0 : 1;
-        } else {
-            _sel = tapX < X_FC ? 2 : 3;
-        }
-        WatchUi.requestUpdate();
+        var col = fieldForTap(tapX, tapY);
+        if (col >= 0) { _sel = col; WatchUi.requestUpdate(); }
     }
 
     function increment() as Void {
@@ -629,15 +663,20 @@ class DoseEditDelegate extends WatchUi.BehaviorDelegate {
     private var _dateStr    as String;
     private var _detailView as DayDetailView;
     private var _profiles   as Array<Dictionary>;
+    private var _paramsView as DoseParamsView;
+    private var _settings   as Dictionary;
 
     function initialize(view as DoseEditView, idx as Number, dateStr as String,
-                        detailView as DayDetailView, profiles as Array<Dictionary>) {
+                        detailView as DayDetailView, profiles as Array<Dictionary>,
+                        settings as Dictionary, doseType as String, foodState as Number) {
         BehaviorDelegate.initialize();
         _view       = view;
         _idx        = idx;
         _dateStr    = dateStr;
         _detailView = detailView;
         _profiles   = profiles;
+        _settings   = settings;
+        _paramsView = new DoseParamsView(doseType, foodState, settings);
     }
 
     // Swipe UP → increment selected time column
@@ -654,6 +693,31 @@ class DoseEditDelegate extends WatchUi.BehaviorDelegate {
 
     function onBack() as Boolean {
         WatchUi.popView(WatchUi.SLIDE_RIGHT);
+        return true;
+    }
+
+    // Top button (KEY_ENTER) opens the same params screen as the gear icon.
+    function onKey(evt as WatchUi.KeyEvent) as Boolean {
+        if (evt.getKey() == WatchUi.KEY_ENTER) {
+            WatchUi.pushView(_paramsView,
+                new DoseParamsDelegate(_paramsView, _settings),
+                WatchUi.SLIDE_LEFT);
+            return true;
+        }
+        return false;
+    }
+
+    // Long-press on a time digit → open TextPicker for direct entry
+    function onHold(evt as WatchUi.ClickEvent) as Boolean {
+        var coords = evt.getCoordinates();
+        var col    = _view.fieldForTap(coords[0], coords[1]);
+        if (col < 0) { return false; }
+        var isHour = (col == 0 || col == 2);
+        WatchUi.pushView(
+            new WatchUi.TextPicker(_view.getFieldVal(col).toString()),
+            new DoseTimeFieldPickerDelegate(_view, col, isHour),
+            WatchUi.SLIDE_UP
+        );
         return true;
     }
 
@@ -691,6 +755,13 @@ class DoseEditDelegate extends WatchUi.BehaviorDelegate {
             return true;
         }
 
+        if (_view.isGearTap(tapX, tapY)) {
+            WatchUi.pushView(_paramsView,
+                new DoseParamsDelegate(_paramsView, _settings),
+                WatchUi.SLIDE_LEFT);
+            return true;
+        }
+
         if (_view.isSaveTap(tapX, tapY)) {
             _save();
             return true;
@@ -713,10 +784,44 @@ class DoseEditDelegate extends WatchUi.BehaviorDelegate {
         StimTrackerStorage.updateDose(
             _dateStr, _idx,
             _view._name, _view._caffMg,
-            _view.getStartSec(), _view.getFinishSec()
+            _view.getStartSec(), _view.getFinishSec(),
+            _paramsView._type, _paramsView._foodState
         );
         _detailView.refreshEvents();
         WatchUi.popView(WatchUi.SLIDE_RIGHT);
+    }
+}
+
+// ── Dose Time Field Text Picker Delegate ────────────────────────────────────
+// Opened by long-press on a time digit in DoseEditView.
+// Clamps to 0–23 for hours, 0–59 for minutes.
+
+class DoseTimeFieldPickerDelegate extends WatchUi.TextPickerDelegate {
+
+    private var _view   as DoseEditView;
+    private var _col    as Number;
+    private var _isHour as Boolean;
+
+    function initialize(view as DoseEditView, col as Number, isHour as Boolean) {
+        TextPickerDelegate.initialize();
+        _view   = view;
+        _col    = col;
+        _isHour = isHour;
+    }
+
+    function onTextEntered(text as String, changed as Boolean) as Boolean {
+        var num = text.toNumber();
+        if (num != null) {
+            var max = _isHour ? 23 : 59;
+            if (num < 0)   { num = 0; }
+            if (num > max) { num = max; }
+            _view.setFieldVal(_col, num);
+        }
+        return true;
+    }
+
+    function onCancel() as Boolean {
+        return true;
     }
 }
 

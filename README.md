@@ -1,8 +1,8 @@
 # StimTracker
 
-A Garmin Venu 3 watch app for tracking caffeine intake throughout the day. StimTracker uses a pharmacokinetic decay model to estimate how much caffeine is currently active in your system, when that level will drop below your sleep threshold, and whether your next drink would push you into warning territory — all from your wrist.
+A Garmin Venu 3 watch app for tracking caffeine intake throughout the day. StimTracker uses a pharmacokinetic model to estimate how much caffeine is currently active in your system, when that level will drop below your sleep threshold, and whether your next drink would push you into warning territory — all from your wrist.
 
-> **⚠️ Work in Progress:** StimTracker is actively developed and many features are planned. See [Future Plans](#future-plans) at the bottom of this document.
+> **⚠️ Work in Progress:** StimTracker is actively developed and further features are planned. See [Future Plans](#future-plans) at the bottom of this document.
 
 > **⚠️ Not Medical Advice:** This app is not intended to diagnose, treat, cure, or prevent any medical condition. The calculations are estimates based on population averages and published pharmacokinetic data — they are not personalised clinical assessments. If you have concerns about your caffeine consumption or its effects on your health, consult a qualified medical professional.
 
@@ -24,11 +24,11 @@ The knowledge base is open source. If you're building Connect IQ apps for the Ve
 
 ## What StimTracker Does
 
-Most caffeine tracking apps count milligrams consumed. StimTracker goes further: it tracks how much caffeine is **currently active in your body** at any given moment, using the same exponential decay model that pharmacologists use to describe how caffeine clears from the body over time.
+Most caffeine tracking apps count milligrams consumed. StimTracker goes further: it tracks how much caffeine is **currently active in your body** at any given moment, using the same pharmacokinetic models that researchers use to describe how caffeine is absorbed and cleared from the body over time.
 
 At a glance from your watch you can see:
 
-- **How much caffeine is in your system right now** (continuously updated, accounting for decay since each dose)
+- **How much caffeine is in your system right now** (continuously updated, accounting for absorption and decay since each dose)
 - **Your total intake today** versus your personalised daily limit
 - **When your caffeine will drop below your sleep threshold** — projected forward from your current load, with your bedtime used as a reference point for warnings
 - **A pre-drink preview** before logging anything — showing you exactly what your numbers would look like after a given drink, including a warning if you'd exceed your daily limit or a previously recorded "Oops" threshold
@@ -38,9 +38,13 @@ At a glance from your watch you can see:
 
 ## How the Caffeine Model Works
 
-### The Core Equation
+StimTracker offers three calculation modes, selectable in Settings. The default is **Instant**; **Standard** and **Precision** add a full two-phase absorption model.
 
-StimTracker uses a **first-order single-compartment exponential decay** model. This is the standard model used in published pharmacokinetic research for caffeine. For a single dose taken at a known time, the amount remaining in the body at any later time is:
+---
+
+### Instant Mode (default)
+
+The simplest model. Each logged dose is assumed to be fully absorbed the moment it is logged. The amount remaining in the body at any later time follows first-order exponential decay:
 
 ```
 C(t) = D × 0.5 ^ (t / t½)
@@ -49,58 +53,174 @@ C(t) = D × 0.5 ^ (t / t½)
 Where:
 - `C(t)` = caffeine remaining at time `t` (mg)
 - `D`    = original dose (mg)
-- `t`    = hours elapsed since the dose was taken
+- `t`    = hours elapsed since the dose was logged
 - `t½`  = your configured half-life (hours; default **5.0 hrs**)
 
-### Multiple Doses
-
-The body processes each dose independently. For multiple doses, the total caffeine in your system at any moment is the **sum of each dose's individual decay**:
+For multiple doses, the total is the **sum of each dose's individual decay** — the body processes each one independently:
 
 ```
-Total = Σ [ Dᵢ × 0.5 ^ ((t - tᵢ) / t½) ]
+Total(t) = Σ [ Dᵢ × 0.5 ^ ((t − tᵢ) / t½) ]
 ```
 
-This is computed fresh each time the main screen updates, looping over all logged doses from today and yesterday.
+**For drinks logged with a Start and Finish time** (recorded using the "Start Recording" flow), Instant mode uses an exact integral formula that distributes absorption evenly across the drinking window:
 
-### What "In System" Means in Practice
-
-Exponential decay means caffeine doesn't disappear at a fixed mg-per-hour rate — it disappears at a fixed *fraction* per unit time. With a 5-hour half-life:
-
+*While still drinking* (current time `t` is between Start and Finish):
 ```
-Start:   200 mg
-5 hrs:   100 mg  (half remains)
-10 hrs:   50 mg
-15 hrs:   25 mg
-20 hrs:  12.5 mg
+Remaining = (D / T) × (t½ / ln2) × [1 − 0.5 ^ (t_elapsed / t½)]
 ```
 
-The curve is steep at first and flattens over time. This is why coffee at 2pm can still affect your sleep at midnight.
+*After drinking ends* (current time is after Finish):
+```
+Remaining = (D / T) × (t½ / ln2) × [0.5 ^ (t_from_finish / t½) − 0.5 ^ (t_from_start / t½)]
+```
+
+Where `T` = drinking duration in hours, and `t½ / ln2` is the characteristic time constant. This ensures the calculation is correct whether you check the app mid-drink or hours later.
+
+**Doses older than 7 × half-life** (35 hours at the default setting) are automatically excluded from the calculation — their contribution is below 1% of the original dose.
+
+---
+
+### Standard and Precision Modes
+
+#### The Case for a Two-Phase Model
+
+In Instant mode, caffeine is assumed to reach full concentration the moment you log it. In reality, caffeine is absorbed through the gastrointestinal tract after ingestion. Gastric emptying — the rate at which the stomach passes its contents to the intestine — is the main bottleneck. Even on an empty stomach, peak plasma concentration typically takes 20–45 minutes for a drink and 45–90 minutes for a capsule.
+
+Every published pharmacokinetic study on caffeine models this as a **one-compartment open model with first-order absorption and first-order elimination** (Bonati et al. 1982, replicated many times). The amount in the body at time `t` after a bolus dose follows:
+
+```
+A(t) = D × (ka / (ka − ke)) × (e^(−ke×t) − e^(−ka×t))
+```
+
+Where:
+- `D`  = dose (mg)
+- `ka` = absorption rate constant (h⁻¹) — how fast caffeine enters the bloodstream
+- `ke` = elimination rate constant (h⁻¹) = ln(2) / t½ — how fast it clears
+- `t`  = hours since the dose
+
+This curve rises from zero to a peak at time `Tmax = ln(ka / ke) / (ka − ke)`, then falls exponentially. Instant mode only captures the falling part; Standard and Precision capture both.
+
+> **Note on volume of distribution:** The standard pharmacokinetic equation includes a volume of distribution term (`Vd`) that converts amount to plasma concentration in mg/L. StimTracker tracks mg-in-system rather than plasma concentration, so `Vd` cancels out and does not appear in the calculation.
+
+#### Absorption Rate Constants
+
+The value of `ka` depends on the form of the dose (liquid or pill) and whether it was taken on an empty stomach. StimTracker uses three food states:
+
+| Food State | What it represents |
+|---|---|
+| **Fasted** | First thing in the morning before eating; stomach fully empty |
+| **Typical** *(default)* | 1–3 hours after a meal; the most common real-world scenario |
+| **With Food** | Consumed alongside or immediately after food |
+
+The intermediate "Typical" state is the default because most real-world caffeine consumption (a mid-morning energy drink, an afternoon coffee) happens in the 1–3 hour post-meal window — neither fully fasted nor actively digesting. Using fasted-state literature values as a default would systematically overestimate the early-phase caffeine curve for most users.
+
+The food effect works mechanically, not chemically: food slows gastric emptying, delaying when caffeine reaches the intestinal absorptive surface. This is the primary reason fed-state absorption is slower — not stomach pH or chemical interaction with food.
+
+The `ka` values used in the app:
+
+| | Drink (liquid) | Pill / capsule |
+|---|---|---|
+| **Fasted** | 3.5 h⁻¹ | 1.75 h⁻¹ |
+| **Typical** | 2.75 h⁻¹ | 1.375 h⁻¹ |
+| **With Food** | 2.0 h⁻¹ | 1.0 h⁻¹ |
+
+These are derived from the pharmacokinetic literature (Kamimori et al. 2002; Alsabri et al. 2018; Fuseau et al.). The Typical values are the average of Fasted and With Food, representing the intermediate gastric state. Drink rates reflect the lumped apparent `ka` that includes gastric emptying; capsule rates are approximately half of drink rates, consistent with the additional dissolution step.
+
+> **On the food effect magnitude:** The Fuseau study found a ~3.5× slowdown in the extreme case of a high-fibre liquid test meal. More typical mixed meals produce a milder effect (~1.5–2×). The 1.375× reduction from Fasted to With Food used here is a conservative middle-ground estimate.
+
+#### Corresponding Tmax Values
+
+| | Drink (liquid) | Pill / capsule |
+|---|---|---|
+| **Fasted** | ~20 min | ~45 min |
+| **Typical** | ~30 min | ~65 min |
+| **With Food** | ~45 min | ~90 min |
+
+#### Drinking Window Model (Standard / Precision)
+
+When a dose is logged with a Start and Finish time using the recording flow, Standard and Precision modes use a piecewise **zero-order input** model rather than the bolus formula. Caffeine enters the gut at a constant rate `R = D / T` (mg/h) during the drinking window `T`, while absorption and elimination proceed simultaneously throughout.
+
+*During the drinking window* (`0 ≤ t ≤ T`):
+```
+A(t) = (R / ke) × (1 − e^(−ke×t))
+     − (R × ka) / (ke × (ka − ke)) × (e^(−ke×t) − e^(−ka×t))
+```
+
+*After the drinking window ends* (`t > T`):
+
+The state at `t = T` is calculated first:
+```
+A_gut(T) = (R / ka) × (1 − e^(−ka×T))
+A_body(T) = [formula above evaluated at t = T]
+```
+
+Then standard two-phase decay from those initial conditions:
+```
+A(t) = A_body(T) × e^(−ke×(t−T))
+     + A_gut(T) × (ka / (ka − ke)) × (e^(−ke×(t−T)} − e^(−ka×(t−T)))
+```
+
+Pills always use the bolus formula regardless of any recorded window — the dissolution time is already incorporated into the lower `ka` value.
+
+> **Why drinking speed usually doesn't matter:** White et al. (2016) found no statistically significant difference in Tmax, AUC, or absorption time between drinking 160 mg of caffeine in 2 minutes versus 20 minutes in fasted subjects. The mechanistic reason is that gastric emptying (30–60 min fasted) dominates the timeline — the stomach acts as a mixing buffer that erases the drinking-rate difference when the window is shorter than gastric emptying time. The window model becomes meaningful for longer sipping sessions (60–90 min+) where caffeine is continuously entering the stomach at a rate comparable to how fast it is being emptied.
+
+#### Guard Against Numerical Instability
+
+When `ka` and `ke` are very close in value (difference < 0.001 h⁻¹), the `(ka − ke)` denominator approaches zero. In this edge case the app falls back to simple exponential decay:
+```
+A(t) = D × 0.5 ^ (t × ke / ln2)
+```
+
+This situation does not arise at any of the configured `ka` values or at any realistic half-life setting.
+
+#### Standard vs. Precision Mode
+
+| | Standard | Precision |
+|---|---|---|
+| **Dose Form** (Drink/Pill) | Per profile — set via the gear icon on profile edit screens | Per profile — same |
+| **Food State** | One global setting (applies to every dose) | Per dose — set at log time |
+
+**Standard mode** is suitable for users whose consumption habits are consistent — for example, always drinking caffeine with breakfast, or always on an empty stomach. Set the global Absorption Profile once in Settings and forget it.
+
+**Precision mode** adds a Food State selector to the Dose Options screen every time you log. The selector resets to "Typical" after each dose, so you only need to change it when your circumstances differ from the norm.
+
+---
 
 ### Sleep Threshold Calculation
 
-The app projects forward in time from your current caffeine load, finding the earliest future moment when the decayed total drops below your configured **sleep threshold** (default: 100 mg). The main screen displays this as **"Below Sleep Threshold: HH:MM"**, or **"Below Sleep Threshold: Now"** if you're already below it. Your **bedtime** setting is used as a reference point — screens will warn you if the threshold won't be reached before bedtime.
+The app projects forward in time from your current caffeine load, finding the earliest future moment when the decayed total drops below your configured **sleep threshold** (default: 100 mg).
+
+For Instant mode (simple decay from current mg):
+```
+t_safe = t½ × log₂(current_mg / threshold_mg)
+       = t½ × ln(current_mg / threshold_mg) / ln(2)
+```
+
+The result is added to the current time to produce the **"Below Sleep Threshold: H:MMam/pm"** display. If you're already below the threshold the display shows **"Below Sleep Threshold: Now"**. Your **Bedtime** setting is used as a reference point — screens will warn you if the threshold won't be reached before bedtime.
+
+---
 
 ### Daily Limit
 
 Your daily limit defaults to a weight-based calculation using the EFSA guideline of **5.7 mg per kg of body weight**, pulled automatically from your Garmin profile. You can override this in Settings.
 
+---
+
 ### Accuracy and Limitations
 
-The model is scientifically grounded but involves several simplifications you should be aware of:
-
-**Absorption delay is not modelled.** In reality, caffeine takes 15–45 minutes to reach peak plasma concentration after ingestion (longer with food). StimTracker assumes the full dose is active immediately when logged. This means the "in system" estimate runs slightly high in the first 30–60 minutes after each dose, then becomes accurate as real absorption catches up. Modelling onset separately for drinks vs. capsules/pills is a planned future addition — see [Future Plans](#future-plans).
-
-**The half-life is a population average.** Published research shows a range of roughly 1.5 to 9.5 hours across individuals. The biggest factors are:
+**The half-life is a population average.** Published research shows a range of roughly 1.5 to 9.5 hours across individuals. The biggest factors:
 - Smoking: roughly halves half-life (~3–4 hrs for regular smokers)
 - Oral contraceptives: roughly doubles half-life (~10 hrs)
 - Pregnancy: can extend to 11–18 hrs in the third trimester
-- Genetics (CYP1A2 enzyme): about 40% of people are fast metabolisers (~3 hrs), 45% normal (~5 hrs), 15% slow (6–10+ hrs)
+- Genetics (CYP1A2 enzyme): ~40% of people are fast metabolisers (~3 hrs), ~45% normal (~5 hrs), ~15% slow (6–10+ hrs)
 
-If StimTracker consistently over- or under-estimates when you feel the effects of caffeine, try adjusting the half-life in Settings to better match your personal metabolism.
+If StimTracker consistently over- or under-estimates when you feel the effects of caffeine, try adjusting the half-life in Settings.
 
-**Paraxanthine is not modelled.** About 84% of caffeine is metabolised into paraxanthine, which is itself an adenosine antagonist with similar stimulant effects and its own half-life. At the 8–15 hour mark after a dose, paraxanthine levels actually exceed caffeine levels. StimTracker only tracks caffeine — meaning total stimulant load is **underestimated** in the hours-later window. This is a simplification that virtually all consumer caffeine trackers make. Paraxanthine tracking is a planned future addition — see [Future Plans](#future-plans).
+**Paraxanthine is not modelled.** About 84% of caffeine is metabolised into paraxanthine, which is itself an adenosine antagonist with similar stimulant effects and its own half-life (~3.5–5 hrs). At the 8–15 hour mark after a large dose, paraxanthine levels actually exceed caffeine levels. StimTracker only tracks caffeine — meaning total stimulant load is **underestimated** in the hours-later window. This is a known simplification that virtually all consumer caffeine trackers make.
 
-**Doses older than 35 hours** (7 × default half-life) are automatically dropped from the calculation — their contribution is below 1% of the original dose and is negligible.
+**The absorption model uses population-average ka values.** Individual gastric emptying rates vary. The food state toggle captures the single most significant known variable (fasted vs. fed), but other factors (meal composition, individual motility, hydration) are not modelled.
+
+**The preview calculation uses Instant mode.** The Preview screen shows what your in-system total would look like "after this dose." For Standard and Precision modes, this number is calculated using the current load plus the full new dose (instant addition) rather than projecting the absorption curve forward — the true peak occurs later. This is a known limitation; a future update will replace the single preview number with a more informative display.
 
 ---
 
@@ -117,17 +237,20 @@ Tap the glance to open the full StimTracker app.
 
 ### Main Screen
 The primary view. Shows:
-- **Large centre number:** Caffeine currently in your system (mg, continuously decaying)
+- **Large centre number:** Caffeine currently in your system (mg, continuously updating)
 - **"Today: X / Y mg":** Your total logged today vs. your daily limit
-- **"Below Sleep Threshold: HH:MM"** or **"Below Sleep Threshold: Now":** Projected time when your caffeine load will drop below your configured sleep threshold. Displays yellow when a future time, green when already below.
+- **"Below Sleep Threshold: H:MMam/pm"** or **"Below Sleep Threshold: Now":** Projected time when your caffeine load will drop below your configured sleep threshold. Displays yellow when a future time, green when already below
 - **Coloured arc bar:** Visual fill of today's total vs. limit (green → orange → red as you approach and exceed the limit)
+- **Gear icon** (top-right): opens Settings
 
 **Navigation from Main:**
 | Action | Result |
 |--------|--------|
 | Swipe UP | Log Stimulant screen |
 | Swipe DOWN | History screen |
-| Menu button (hold back) | Settings |
+| Tap gear icon | Settings |
+| Top button | Settings |
+| Tap Oops button | Oops screen |
 
 ---
 
@@ -139,21 +262,20 @@ A scrollable list of your saved drink/product profiles, plus two special rows at
 
 Below that, your saved profiles are listed in your configured sort order, each showing:
 - **Name** (coloured white, orange, or red — see warning colours below)
-- **Caffeine amount** (mg) — centred
-- **Sort order number** — shown on the far left of the mg line, so you know which number to use in the sort order field if you want to reposition an entry
-- **Scroll arrows** appear when there are more rows than visible
+- **Caffeine amount** (mg)
+- **Sort order number** — shown on the far left of the mg line
 
 **Warning colours on profile names:**
 - **White** — no threshold would be exceeded
-- **Orange** — this drink would push your *today total* over your daily limit
-- **Red** — this drink would push your *in-system estimate* over your Oops threshold (your personal "too much" level, if set)
+- **Orange** — this drink would push your today total over your daily limit
+- **Red** — this drink would push your in-system estimate over your Oops threshold (if set)
 
 **Navigation from Log Stimulant:**
 | Action | Result |
 |--------|--------|
-| Tap a profile | Preview / Confirm screen for that profile |
+| Tap a profile | Preview / Confirm screen |
 | Tap Misc | Misc Quick Log screen |
-| Long-press a profile | Edit Profile screen for that profile |
+| Long-press a profile | Edit Profile screen |
 | Tap "+ Add New Stimulant" | Add Stimulant screen |
 | Swipe UP / DOWN | Scroll the list |
 | Back button | Return to Main |
@@ -169,37 +291,48 @@ Displays:
 - **After this drink:**
   - New in-system estimate (mg)
   - New today total (mg)
-  - Updated **"Below Sleep Threshold"** time
+  - Updated "Below Sleep Threshold" time
 - **"Log It"** button (green) — logs the drink with the current timestamp and returns to Main
-- **"Adjust Time"** button (red) — opens the Adjust Time screen to backdate or forward-date the log entry before committing
+- **"Dose Options"** button (red) — opens the Dose Options screen to adjust time, food state, or start a recording session before committing
 
 **Navigation from Preview:**
 | Action | Result |
 |--------|--------|
 | Tap "Log It" | Logs drink, returns to Main |
-| Tap "Adjust Time" | Adjust Time screen |
+| Tap "Dose Options" | Dose Options screen |
 | Long-press back | Edit Profile screen for this profile |
 | Back button | Return to Log Stimulant (nothing logged) |
 
 ---
 
-### Adjust Time Screen
-Lets you set a custom start time (and optionally a custom finish time) for a log entry. Useful for backdating a drink you forgot to log, or logging something you've already partially consumed.
+### Dose Options Screen
+Accessed from the Preview screen. Lets you customise the timing and (in Precision mode) the food state before logging.
 
-The screen shows two time columns — **Start** and **Finish** — each with Hour and Minute sub-columns. Tap a column to select it; swipe UP/DOWN to change the selected value.
+**Time fields:**
+- **Start** and **Finish** columns, each with Hour and Minute sub-columns
+- Tap a column to select it; swipe UP/DOWN to change the value
 
-When you're done, tap **"Preview"** to return to the Preview screen with the adjusted timestamp applied to the dose calculation.
+**Food State row** *(Precision mode only):*
+- Cycles through **Fasted → Typical → With Food** on each tap
+- Resets to Typical each time the screen is opened (per-dose setting, not persistent)
+- Selecting a non-Typical food state will change the shape of the absorption curve in the calculation
+
+**Bottom buttons:**
+- **Save** — returns to Preview with the adjusted timestamp (and food state in Precision mode)
+- **or**
+- **Start Recording** — saves the start time and a pending dose entry; the app returns to Main while the dose is "in progress." A recording indicator is shown. Tap **Finish Recording** when you finish the drink; the finish time is captured and the full window dose is logged
 
 ---
 
 ### Misc Quick Log Screen
-For one-off caffeine amounts that don't correspond to a saved profile — a random coffee shop coffee, a medication, etc.
+For one-off caffeine amounts that don't correspond to a saved profile.
 
 - Use **−** / **+** to set the caffeine amount in 10 mg steps, or tap the number to type it directly
-- Tap **"Preview"** to go to the Preview / Confirm screen with this amount
-- Back or swipe down to cancel (nothing is logged or saved)
+- **Gear icon** (top-right) / top button — opens the Misc Parameters screen to set Dose Form and Food State (Standard/Precision modes)
+- Tap **"Preview"** to go to the Preview / Confirm screen
+- Back or swipe down to cancel
 
-> **💡 Typing tip:** Anywhere in StimTracker where tapping a name or number opens the on-watch keyboard, Garmin Connect will also push a text entry prompt to your phone if it is on and connected. Typing on your phone's full keyboard is often much faster than using the watch's character picker — especially for profile names.
+> **💡 Typing tip:** Anywhere in StimTracker where tapping a name or number opens the on-watch keyboard, Garmin Connect will also push a text entry prompt to your phone if it is on and connected. Typing on your phone's full keyboard is often much faster.
 
 ---
 
@@ -226,24 +359,38 @@ A list of all individual dose entries for a selected day, showing:
 - **Time logged**
 - **Caffeine amount (mg)**
 
-Long-press any dose entry to edit it (name, time, caffeine amount) or delete it.
+Long-press any dose entry to edit it or delete it.
 
 **Navigation:**
 | Action | Result |
 |--------|--------|
 | Long-press a dose | Dose Edit screen |
-| Swipe UP / DOWN | Scroll if more than a few entries |
+| Swipe UP / DOWN | Scroll if needed |
 | Back button | Return to History |
 
 ---
 
 ### Dose Edit Screen
 Edit an individual historical dose entry. You can change:
-- **Name** — tap to open a menu. Scroll through the configured Stimulants to select one, 	select Custom to access the keyboard picker
-- **Time** — tap to seelcts and then swipe and and down to adjust the logged timestamp
+- **Name** — tap to open a picker; scroll through saved stimulants or select Custom for keyboard entry
+- **Time** — tap to select, then swipe to adjust the logged timestamp
 - **Caffeine amount** — use −/+ or tap the number to type
+- **Gear icon / top button** — opens Dose Parameters (Dose Form and Food State; availability depends on absorption mode)
 
 Tap **Save** to commit changes. Tap **Delete** to remove the dose entirely (with confirmation).
+
+---
+
+### Dose Parameters Screen
+Accessed via the gear icon or top button from any dose editing screen (Dose Edit, Profile Edit, Add Stimulant, Misc Quick Log).
+
+Shows two rows:
+- **Dose Form** — `Drink` or `Pill`. Active (and tappable) in Standard and Precision modes; greyed out in Instant mode
+- **Food State** — `Fasted`, `Typical`, or `With Food`. Active only in Precision mode; greyed out in Standard and Instant modes
+
+Tap any active row to cycle its value in place. Changes take effect when you Save on the parent screen.
+
+> The greyed-out rows are intentionally visible rather than hidden — they let you see what would be unlocked if you changed your absorption mode in Settings.
 
 ---
 
@@ -251,6 +398,7 @@ Tap **Save** to commit changes. Tap **Delete** to remove the dose entirely (with
 Reached by tapping "+ Add New Stimulant" from the Log Stimulant screen. Enter:
 - **Name** — tap to open keyboard picker
 - **Caffeine (mg)** — use −/+ or tap the number to type directly
+- **Gear icon / top button** — opens Profile Parameters to set the Dose Form for this profile
 
 Tap **Save** to add the profile to your list.
 
@@ -259,14 +407,14 @@ Tap **Save** to add the profile to your list.
 ### Edit Profile Screen (Edit Existing)
 Reached by long-pressing a profile on the Log Stimulant screen, or by long-pressing the back button from the Preview screen.
 
-Shows all editable fields for the selected profile:
-- **Name** — tap to rename via keyboard picker
-- **Sort Order** — tap to activate (arrows turn green), then swipe UP/DOWN to move the profile up or down in the list. The sort order determines the display order on the Log Stimulant screen
-- **Caffeine (mg)** — use −/+ or tap the number to type directly
+- **Name** — tap to rename
+- **Sort Order** — tap to activate (arrows turn green), then swipe UP/DOWN to reposition in the list
+- **Caffeine (mg)** — use −/+ or tap to type
+- **Gear icon / top button** — opens Profile Parameters to set the Dose Form
 
-Tap **Save** to commit all changes (name, sort order, and caffeine). Tap **Delete Profile** to permanently remove the profile (with confirmation — does not affect history).
+Tap **Save** to commit all changes. Tap **Delete Profile** to permanently remove the profile (with confirmation — does not affect history).
 
-> Note: Deleting a profile does **not** alter your history. Each logged dose stores its own snapshot of the name and caffeine amount at the time of logging, so historical records remain accurate even if you later rename or delete a profile.
+> Note: Deleting a profile does **not** alter your history. Each logged dose stores its own snapshot of the name and caffeine amount at the time of logging.
 
 ---
 
@@ -275,16 +423,19 @@ A scrollable list of all configurable values. Tap any row to edit.
 
 | Setting | What it does |
 |---------|-------------|
-| **Daily Limit (mg)** | Your maximum daily caffeine target. Defaults to 5.7 mg/kg of your Garmin profile body weight. Affects the coloured arc and warning colours. |
-| **Half-Life (hrs)** | How fast your body processes caffeine. Default: 5.0 hrs. Adjust lower if you feel effects fade faster than the app predicts; adjust higher if you're sensitive or effects linger. |
-| **Sleep Threshold (mg)** | The in-system caffeine level at or below which you expect to be able to sleep. Default: 100 mg. Used to calculate the "Below Sleep Threshold" projected time. |
-| **Bedtime** | Your target bedtime (HH:MM). Used together with the sleep threshold to display a warning if your caffeine won't clear in time. |
-| **Oops Threshold (mg)** | Your personal "too much" level — the in-system amount at which you've previously experienced unwanted effects. If set, profile rows turn red when the projected post-dose in-system level would exceed this. Set via the Oops button on Main, or manually adjusted here. |
+| **Daily Caffeine Limit** | Your maximum daily caffeine target. Defaults to 5.7 mg/kg of your Garmin profile body weight (EFSA guideline). Affects the coloured arc and warning colours. |
+| **Caffeine Half-Life** | How fast your body processes caffeine. Default: 5.0 hrs. Adjust lower if effects fade faster than the app predicts; adjust higher if effects linger. |
+| **Sleep Threshold** | The in-system caffeine level at or below which you expect to sleep. Default: 100 mg. Used to calculate the "Below Sleep Threshold" time. |
+| **Bedtime** | Your target bedtime (H:MMam/pm). Pre-populated from your Garmin sleep schedule if available. |
+| **Oops Threshold** | Your personal "too much" level. If set, profile rows turn red when the projected post-dose in-system level would exceed this. Set via the Oops button, or adjusted manually here. |
+| **Absorption Model** | `Instant` (default) / `Standard` / `Precision` — controls which pharmacokinetic model is used. See [How the Caffeine Model Works](#how-the-caffeine-model-works). |
+| **Absorption Profile** | *(Standard mode only)* Global food state: `Fasted` / `Typical` / `With Food`. Sets the `ka` value applied to every dose in Standard mode. Does not appear in Instant or Precision modes. |
+| **Reset Today's Log** | Clears all log entries for today (with confirmation). Does not affect history for other days. |
 
 ---
 
 ### Oops Screen
-Accessible via the Oops button [Red heart with a white !] on the Main screen. Use this when you notice you've consumed too much — racing heart, jitters, trouble settling, etc.
+Accessible via the Oops button (red heart with white exclamation mark) on the Main screen. Use this when you notice you've consumed too much — racing heart, jitters, trouble settling, etc.
 
 The screen shows your current in-system caffeine estimate as a snapshot. Confirm to save this value as your personal **Oops Threshold** — future drinks that would push you past this level will be flagged red in the Log Stimulant list and with a warning banner in the Preview screen.
 
@@ -304,7 +455,7 @@ Each release includes three files. All three contain the same app — the differ
 
 **Release `.prg`** is a fully optimised build with debug symbols and logging stripped out. This is what you want if you just want to use the app.
 
-**Debug `.prg` + `.prg.debug.xml`** — these two files must be kept together. The `.prg` is the app binary; the `.prg.debug.xml` is the symbol map that translates raw crash addresses into source file names and line numbers. If the app crashes, the watch writes a log to `GARMIN\APPS\LOGS\CIQ_LOG.YAML` — cross-referencing that log against the `.prg.debug.xml` tells you exactly which line of code caused the crash.
+**Debug `.prg` + `.prg.debug.xml`** — these two files must be kept together. If the app crashes, the watch writes a log to `GARMIN\APPS\LOGS\CIQ_LOG.YAML` — cross-referencing that log against the `.prg.debug.xml` tells you exactly which line of code caused the crash.
 
 **`.iq` file** is a 7-zip archive containing the release `.prg` plus metadata. You can extract the `.prg` from it by renaming it to `.7z` and extracting.
 
@@ -333,11 +484,11 @@ Compatibility with other devices has not been tested.
 
 ## Disclaimers
 
-**Not medical advice.** StimTracker is a personal tracking tool, not a medical device. The caffeine estimates it produces are based on published population-average pharmacokinetic data and are not personalised clinical measurements. Individual responses to caffeine vary widely based on genetics, health status, medications, pregnancy, and other factors. Do not use this app to make medical decisions. If you have any concerns about your caffeine intake or its effects on your health — including heart rate changes, sleep disruption, anxiety, or any other symptom — consult a qualified medical professional.
+**Not medical advice.** StimTracker is a personal tracking tool, not a medical device. The caffeine estimates it produces are based on published population-average pharmacokinetic data and are not personalised clinical measurements. Individual responses to caffeine vary widely based on genetics, health status, medications, pregnancy, and other factors. Do not use this app to make medical decisions. If you have any concerns about your caffeine intake or its effects on your health, consult a qualified medical professional.
 
-**Estimates, not measurements.** The app does not measure caffeine in your body. It calculates an *estimate* based on what you've logged, when you logged it, and a configurable half-life value. If you forget to log a drink, log it with the wrong time, or have a half-life that differs significantly from the default, the estimates will be off accordingly.
+**Estimates, not measurements.** The app does not measure caffeine in your body. It calculates an *estimate* based on what you've logged, when you logged it, and your configured settings. If you forget to log a drink, log it with the wrong time, or have a metabolism that differs significantly from the defaults, the estimates will be off accordingly.
 
-**Caffeine content accuracy.** The caffeine amounts in your profiles are only as accurate as the values you enter. Caffeine content can vary between batches, preparation methods, and serving sizes. The app uses whatever values you configure.
+**Caffeine content accuracy.** The caffeine amounts in your profiles are only as accurate as the values you enter. Caffeine content can vary between batches, preparation methods, and serving sizes.
 
 **The sleep threshold is a guideline.** The "Below Sleep Threshold" time is a projection based on when your modelled caffeine load drops below a configurable threshold. Being above the threshold does not mean sleep is impossible, and being below it does not guarantee good sleep. Sleep is affected by many factors beyond caffeine.
 
@@ -345,25 +496,21 @@ Compatibility with other devices has not been tested.
 
 ## Future Plans
 
-StimTracker is a Phase 1 release focused entirely on caffeine. There is a lot planned. Here is a sample of what's being considered for future versions:
+**Graphs and trends** — Visualising your caffeine load curve over the course of a day, or your daily totals over weeks.
 
-**Graphs and trends** — Visualising your caffeine load curve over the course of a day, or your daily totals over weeks, to help you understand your patterns at a glance.
+**Improved pre-drink preview** — The current Preview screen adds the new dose as an instant bolus for simplicity. A future update will show the projected peak time and peak level under Standard/Precision models, replacing the single summary number with something that better reflects the absorption curve.
 
-**Tracking additional ingredients** — L-Theanine, Taurine, Niacin (B3), Vitamin B6, B12, L-Tyrosine, and other active compounds found in energy drinks and supplements. The pharmacokinetics are documented; it's a matter of expanding the data model and UI.
+**Tracking additional ingredients** — L-Theanine, Taurine, Niacin (B3), Vitamin B6, B12, L-Tyrosine, and other active compounds found in energy drinks and supplements.
 
-**Pill vs. drink onset modelling** — Currently the model assumes instant absorption. A future refinement would let you flag whether something is a capsule or a liquid, applying a more realistic absorption curve (peak at ~30–45 min for a pill vs. ~15–20 min for a drink). This would reduce the early-dose overestimate in the in-system number.
+**Sleep threshold calibration** — A method for recording how much caffeine was estimated to be in your system when you actually fell asleep, to help you find your real sleep threshold rather than guessing.
 
-**Sleep threshold calibration** — A method for recording how much caffeine was estimated to be in your system when you actually fell asleep, building up a personal dataset to help you find your real sleep threshold rather than guessing.
+**Heart rate monitoring** — Looking at resting heart rate changes after consumption to spot patterns or correlate heart rate elevation with in-system caffeine estimates.
 
-**Heart rate monitoring** — Looking at resting heart rate changes after consumption to spot patterns, identify early signs of over-consumption, or correlate heart rate elevation with in-system caffeine estimates.
+**"Wean off" mode** — A guided reduction plan that helps you step down your daily caffeine intake gradually.
 
-**"Wean off" mode** — A guided reduction plan that helps you step down your daily caffeine intake gradually over a configurable number of days or weeks, to minimise withdrawal symptoms while working toward a lower baseline.
-
-**Paraxanthine tracking** — Modelling the primary caffeine metabolite (which accounts for the 8–15 hour stimulant tail that pure caffeine tracking misses).
+**Paraxanthine tracking** — Modelling the primary caffeine metabolite, which accounts for the 8–15 hour stimulant tail that pure caffeine tracking misses.
 
 **A companion Android app** — For richer history views, long-term trend analysis beyond the 30-day on-device window, data export, and a more convenient interface for managing profiles and settings.
-
-**And more.** This is an evolving personal project. Features get added based on what proves useful in real-world daily use.
 
 ---
 

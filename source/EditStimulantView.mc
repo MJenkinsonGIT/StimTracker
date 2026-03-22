@@ -15,6 +15,7 @@ class EditStimulantView extends WatchUi.View {
     var _settings as Dictionary;
     var _name     as String;
     var _caffMg   as Number;
+    var _gearBmp  as WatchUi.BitmapResource;
 
     function initialize(profile as Dictionary or Null, settings as Dictionary) {
         View.initialize();
@@ -22,13 +23,19 @@ class EditStimulantView extends WatchUi.View {
         _settings = settings;
         _name     = profile != null ? profile["name"] as String : "";
         _caffMg   = profile != null ? profile["caffeineMg"] as Number : 100;
+        _gearBmp  = WatchUi.loadResource(Rez.Drawables.GearIcon) as WatchUi.BitmapResource;
+    }
+
+    // Gear tap -- centred on (395, 135), r=14 → 40px touch target
+    function isGearTap(tapX as Number, tapY as Number) as Boolean {
+        return tapX >= 355 && tapX <= 435 && tapY >= 115 && tapY <= 155;
     }
 
     function onUpdate(dc as Graphics.Dc) as Void {
         dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
         dc.clear();
 
-        // ── Title ────────────────────────────────────────────────────────
+        // ── Title ──────────────────────────────────────���─────────────────
         var title = _profile == null ? "Add Stimulant" : "Edit Stimulant";
         dc.setColor(Graphics.COLOR_GREEN, Graphics.COLOR_TRANSPARENT);
         dc.drawText(CX, 30, Graphics.FONT_XTINY, title,
@@ -43,6 +50,9 @@ class EditStimulantView extends WatchUi.View {
             Graphics.COLOR_TRANSPARENT);
         dc.drawText(CX, 108, Graphics.FONT_XTINY, displayName,
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+
+        // Gear icon (Parameters) -- right bezel, between name and caffeine label
+        dc.drawBitmap(395 - _gearBmp.getWidth() / 2, 135 - _gearBmp.getHeight() / 2, _gearBmp);
 
         // ── Caffeine mg field ─────────────────────────────────────────────
         dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
@@ -131,10 +141,11 @@ class EditStimulantView extends WatchUi.View {
 
 class EditStimulantDelegate extends WatchUi.BehaviorDelegate {
 
-    private var _view     as EditStimulantView;
-    private var _profile  as Dictionary or Null;
-    private var _settings as Dictionary;
-    private var _listView as LogStimulantView;
+    private var _view       as EditStimulantView;
+    private var _profile    as Dictionary or Null;
+    private var _settings   as Dictionary;
+    private var _listView   as LogStimulantView;
+    private var _paramsView as ProfileParamsView;
 
     function initialize(view as EditStimulantView, profile as Dictionary or Null,
                         settings as Dictionary, listView as LogStimulantView) {
@@ -143,12 +154,26 @@ class EditStimulantDelegate extends WatchUi.BehaviorDelegate {
         _profile  = profile;
         _settings = settings;
         _listView = listView;
+        var profileType = (profile != null && (profile as Dictionary).hasKey("type"))
+            ? (profile as Dictionary)["type"] as String : "drink";
+        _paramsView = new ProfileParamsView(profileType, settings);
     }
 
     // Back button or swipe down = cancel
     function onBack() as Boolean {
         WatchUi.popView(WatchUi.SLIDE_RIGHT);
         return true;
+    }
+
+    // Top button (KEY_ENTER) opens the same params screen as the gear icon.
+    function onKey(evt as WatchUi.KeyEvent) as Boolean {
+        if (evt.getKey() == WatchUi.KEY_ENTER) {
+            WatchUi.pushView(_paramsView,
+                new ProfileParamsDelegate(_paramsView, _settings),
+                WatchUi.SLIDE_LEFT);
+            return true;
+        }
+        return false;
     }
 
     function onPreviousPage() as Boolean {
@@ -160,6 +185,14 @@ class EditStimulantDelegate extends WatchUi.BehaviorDelegate {
         var coords = evt.getCoordinates();
         var tapX   = coords[0];
         var tapY   = coords[1];
+
+        // Gear checked before name: hitboxes share y=115-130 zone.
+        if (_view.isGearTap(tapX, tapY)) {
+            WatchUi.pushView(_paramsView,
+                new ProfileParamsDelegate(_paramsView, _settings),
+                WatchUi.SLIDE_LEFT);
+            return true;
+        }
 
         if (_view.isNameTap(tapX, tapY)) {
             WatchUi.pushView(
@@ -201,10 +234,12 @@ class EditStimulantDelegate extends WatchUi.BehaviorDelegate {
     private function _save() as Void {
         var updated;
         if (_profile == null) {
-            updated = StimTrackerStorage.addProfile(_view._name, _view._caffMg, _settings);
+            updated = StimTrackerStorage.addProfile(_view._name, _view._caffMg,
+                _paramsView._type, _settings);
         } else {
             updated = StimTrackerStorage.updateProfile(
-                _profile["id"] as Number, _view._name, _view._caffMg);
+                _profile["id"] as Number, _view._name, _view._caffMg,
+                _paramsView._type);
         }
         _listView.refreshProfiles(updated);
         WatchUi.popView(WatchUi.SLIDE_RIGHT);

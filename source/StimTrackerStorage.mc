@@ -39,12 +39,14 @@ class StimTrackerStorage {
 
     // Returns the settings dictionary, initialising defaults on first run.
     // Settings keys:
-    //   "limitMg"          -> Number  (daily caffeine limit in mg)
-    //   "halfLifeHrs"      -> Float   (caffeine half-life in hours, default 5.0)
-    //   "sleepThresholdMg" -> Number  (mg in system = "safe to sleep", default 100)
-    //   "bedtimeMinutes"   -> Number  (minutes since midnight for bedtime)
-    //   "oopsThresholdMg"  -> Number or Null (mg in system at time of Oops event)
-    //   "nextProfileId"    -> Number  (auto-increment ID for new profiles)
+    //   "limitMg"           -> Number  (daily caffeine limit in mg)
+    //   "halfLifeHrs"       -> Float   (caffeine half-life in hours, default 5.0)
+    //   "sleepThresholdMg"  -> Number  (mg in system = "safe to sleep", default 100)
+    //   "bedtimeMinutes"    -> Number  (minutes since midnight for bedtime)
+    //   "oopsThresholdMg"   -> Number or Null (mg in system at time of Oops event)
+    //   "nextProfileId"     -> Number  (auto-increment ID for new profiles)
+    //   "absorptionModel"   -> Number  (0=Instant, 1=Standard, 2=Precision)
+    //   "standardFoodState" -> Number  (0=Fasted, 1=Typical, 2=WithFood)
     static function loadSettings() as Dictionary {
         var stored = Application.Storage.getValue("settings");
         if (stored != null) {
@@ -89,12 +91,14 @@ class StimTrackerStorage {
         }
 
         return {
-            "limitMg"          => limitMg,
-            "halfLifeHrs"      => 5.0f,
-            "sleepThresholdMg" => 100,
-            "bedtimeMinutes"   => bedtimeMinutes,
-            "oopsThresholdMg"  => null,
-            "nextProfileId"    => 8  // first user-created profile gets ID 8
+            "limitMg"           => limitMg,
+            "halfLifeHrs"       => 5.0f,
+            "sleepThresholdMg"  => 100,
+            "bedtimeMinutes"    => bedtimeMinutes,
+            "oopsThresholdMg"   => null,
+            "nextProfileId"     => 8,   // first user-created profile gets ID 8
+            "absorptionModel"   => 0,   // 0=Instant, 1=Standard, 2=Precision
+            "standardFoodState" => 1    // 0=Fasted, 1=Typical, 2=WithFood (Standard sub-setting)
         } as Dictionary;
     }
 
@@ -115,10 +119,11 @@ class StimTrackerStorage {
     }
 
     // Add a new profile. Returns the updated profiles array.
-    static function addProfile(name as String, caffeineMg as Number, settings as Dictionary) as Array<Dictionary> {
+    static function addProfile(name as String, caffeineMg as Number,
+                                 doseType as String, settings as Dictionary) as Array<Dictionary> {
         var profiles = loadProfiles();
         var nextId = settings["nextProfileId"] as Number;
-        profiles.add({ "id" => nextId, "name" => name, "caffeineMg" => caffeineMg });
+        profiles.add({ "id" => nextId, "name" => name, "caffeineMg" => caffeineMg, "type" => doseType });
         saveProfiles(profiles);
         settings["nextProfileId"] = nextId + 1;
         saveSettings(settings);
@@ -126,13 +131,15 @@ class StimTrackerStorage {
     }
 
     // Update an existing profile by id. Returns updated profiles array.
-    static function updateProfile(id as Number, name as String, caffeineMg as Number) as Array<Dictionary> {
+    static function updateProfile(id as Number, name as String, caffeineMg as Number,
+                                    doseType as String) as Array<Dictionary> {
         var profiles = loadProfiles();
         for (var i = 0; i < profiles.size(); i++) {
             var p = profiles[i] as Dictionary;
             if ((p["id"] as Number) == id) {
                 p["name"]       = name;
                 p["caffeineMg"] = caffeineMg;
+                p["type"]       = doseType;
                 profiles[i]     = p;
                 break;
             }
@@ -200,7 +207,8 @@ class StimTrackerStorage {
 
     // Load all dose events for a given date string.
     // Each event: { "profileId" => Number, "name" => String,
-    //               "caffeineMg" => Number, "timestampMs" => Number }
+    //               "caffeineMg" => Number, "timestampSec" => Number,
+    //               "type" => String, "foodState" => Number }
     static function loadDayLog(dateStr as String) as Array<Dictionary> {
         var stored = Application.Storage.getValue(logKey(dateStr));
         if (stored != null) {
@@ -210,8 +218,9 @@ class StimTrackerStorage {
     }
 
     // Append an instant dose (backward-compatible wrapper).
+    // Uses "drink" type and Typical food state as migration defaults.
     static function logDose(profileId as Number, name as String, caffeineMg as Number, timestampSec as Number) as Void {
-        logDoseWithWindow(profileId, name, caffeineMg, timestampSec, timestampSec);
+        logDoseWithWindow(profileId, name, caffeineMg, timestampSec, timestampSec, "drink", 1);
     }
 
     // Append a dose with a consumption window to the appropriate day's log.
@@ -220,7 +229,8 @@ class StimTrackerStorage {
     // of startSec so yesterday-evening starts are found by the yesterday loop.
     static function logDoseWithWindow(profileId as Number, name as String,
                                       caffeineMg as Number,
-                                      startSec as Number, finishSec as Number) as Void {
+                                      startSec as Number, finishSec as Number,
+                                      doseType as String, foodState as Number) as Void {
         // Derive date string from startSec
         var startMoment = new Time.Moment(startSec);
         var si = Gregorian.info(startMoment, Time.FORMAT_SHORT);
@@ -236,7 +246,9 @@ class StimTrackerStorage {
             "caffeineMg"   => caffeineMg,
             "startSec"     => startSec,
             "finishSec"    => finishSec,
-            "timestampSec" => startSec   // kept for backward compat / history display
+            "timestampSec" => startSec,   // kept for backward compat / history display
+            "type"         => doseType,
+            "foodState"    => foodState
         });
         Application.Storage.setValue(logKey(dateStr), events);
         _touchDayIndex(dateStr);
@@ -293,7 +305,8 @@ class StimTrackerStorage {
     // Update a single dose entry by index in a day's log.
     static function updateDose(dateStr as String, idx as Number,
                                 name as String, caffeineMg as Number,
-                                startSec as Number, finishSec as Number) as Void {
+                                startSec as Number, finishSec as Number,
+                                doseType as String, foodState as Number) as Void {
         var events = loadDayLog(dateStr);
         if (idx < 0 || idx >= events.size()) { return; }
         var evt = events[idx] as Dictionary;
@@ -302,6 +315,8 @@ class StimTrackerStorage {
         evt["startSec"]     = startSec;
         evt["finishSec"]    = finishSec;
         evt["timestampSec"] = startSec;  // keep in sync for backward compat
+        evt["type"]         = doseType;
+        evt["foodState"]    = foodState;
         events[idx] = evt;
         Application.Storage.setValue(logKey(dateStr), events);
     }
@@ -332,12 +347,15 @@ class StimTrackerStorage {
 
     // Save a dose that has started but not yet finished.
     static function savePendingDose(profileId as Number, name as String,
-                                    caffeineMg as Number, startSec as Number) as Void {
+                                    caffeineMg as Number, startSec as Number,
+                                    doseType as String, foodState as Number) as Void {
         Application.Storage.setValue("pending_dose", {
             "profileId"  => profileId,
             "name"       => name,
             "caffeineMg" => caffeineMg,
-            "startSec"   => startSec
+            "startSec"   => startSec,
+            "type"       => doseType,
+            "foodState"  => foodState
         } as Dictionary);
     }
 
@@ -355,12 +373,15 @@ class StimTrackerStorage {
         var stored = Application.Storage.getValue("pending_dose");
         if (stored == null) { return; }
         var p = stored as Dictionary;
+        var pType      = p.hasKey("type")      ? p["type"]      as String : "drink";
+        var pFoodState = p.hasKey("foodState") ? p["foodState"] as Number : 1;
         logDoseWithWindow(
             p["profileId"]  as Number,
             p["name"]       as String,
             p["caffeineMg"] as Number,
             p["startSec"]   as Number,
-            finishSec
+            finishSec,
+            pType, pFoodState
         );
         clearPendingDose();
     }
@@ -387,23 +408,103 @@ class StimTrackerStorage {
 
     // ── Pharmacokinetics ───────────────────────────────────────────────────
 
+    // Returns absorption rate constant ka (h⁻¹) for a given dose type and food state.
+    // type:      "drink" | "pill"
+    // foodState: 0=Fasted, 1=Typical (default), 2=WithFood
+    // Migration: absent foodState field should be treated as 1 (Typical) by callers.
+    static function getKa(type as String, foodState as Number) as Float {
+        if (type.equals("drink")) {
+            if (foodState == 0) { return 3.5f;   }  // fasted
+            if (foodState == 2) { return 2.0f;   }  // with food
+            return 2.75f;                            // typical (default)
+        }
+        // pill
+        if (foodState == 0) { return 1.75f;  }
+        if (foodState == 2) { return 1.0f;   }
+        return 1.375f;                               // typical (default)
+    }
+
+    // One-compartment oral absorption model.
+    // Returns estimated mg in system at tHours after dose start.
+    //
+    // doseMg      : dose size (mg)
+    // ka          : absorption rate constant (h⁻¹), from getKa()
+    // ke          : elimination rate constant (h⁻¹) = ln2 / halfLifeHrs
+    // tHours      : elapsed time since dose start (hours)
+    // windowHours : drinking duration (hours); 0 = bolus (instant ingestion)
+    //
+    // Pills always use the bolus path (windowHours is ignored for pills;
+    // callers should pass 0 for pill doses).
+    static function calcAbsorbedMg(doseMg as Float, ka as Float, ke as Float,
+                                    tHours as Float, windowHours as Float) as Float {
+        if (tHours <= 0.0f) { return 0.0f; }
+        var ln2 = Math.log(2.0, Math.E).toFloat();
+
+        // Guard: ka ≈ ke would cause divide-by-zero — fall back to simple decay
+        var diff = ka - ke;
+        if (diff < 0.0f) { diff = -diff; }
+        if (diff < 0.001f) {
+            return doseMg * Math.pow(0.5, tHours * ke / ln2).toFloat();
+        }
+
+        if (windowHours <= 0.0f) {
+            // Bolus path: C(t) = D * ka/(ka-ke) * (e^(-ke*t) - e^(-ka*t))
+            // Using 0.5-base: e^(-x*t) = 0.5^(x*t/ln2)
+            var ke_d = Math.pow(0.5, tHours * ke / ln2).toFloat();
+            var ka_d = Math.pow(0.5, tHours * ka / ln2).toFloat();
+            var result = doseMg * (ka / (ka - ke)) * (ke_d - ka_d);
+            if (result < 0.0f) { result = 0.0f; }
+            return result;
+        }
+
+        // Piecewise zero-order input model (drink with window):
+        // Zero-order input at rate R = D/T during [0, T]; first-order
+        // absorption + elimination throughout; standard decay after T.
+        var R = doseMg / windowHours;  // mg/h input rate
+        var T = windowHours;
+
+        if (tHours <= T) {
+            // During drinking phase
+            var ke_d = Math.pow(0.5, tHours * ke / ln2).toFloat();
+            var ka_d = Math.pow(0.5, tHours * ka / ln2).toFloat();
+            var result = (R / ke) * (1.0f - ke_d)
+                       - (R * ka) / (ke * (ka - ke)) * (ke_d - ka_d);
+            if (result < 0.0f) { result = 0.0f; }
+            return result;
+        }
+
+        // After drinking: initial conditions at t = T, then standard decay
+        var ke_T    = Math.pow(0.5, T * ke / ln2).toFloat();
+        var ka_T    = Math.pow(0.5, T * ka / ln2).toFloat();
+        var A_gut_T = (R / ka) * (1.0f - ka_T);
+        var A_bdy_T = (R / ke) * (1.0f - ke_T)
+                    - (R * ka) / (ke * (ka - ke)) * (ke_T - ka_T);
+        if (A_bdy_T < 0.0f) { A_bdy_T = 0.0f; }
+
+        var dt    = tHours - T;
+        var ke_dt = Math.pow(0.5, dt * ke / ln2).toFloat();
+        var ka_dt = Math.pow(0.5, dt * ka / ln2).toFloat();
+        var result = A_bdy_T * ke_dt + A_gut_T * (ka / (ka - ke)) * (ke_dt - ka_dt);
+        if (result < 0.0f) { result = 0.0f; }
+        return result;
+    }
+
     // Calculate total caffeine currently in system.
     //
-    // Instant doses use standard exponential decay:
-    //   remaining = D * 0.5^(elapsed / t½)
-    //
-    // Window doses (startSec < finishSec) use the closed-form integral of
-    // uniform absorption followed by exponential decay:
-    //   coeff = D / durHrs * (t½ / ln2)
-    //   while absorbing: coeff * [1 - 0.5^(elapsed_start / t½)]
-    //   after finishing:  coeff * [0.5^(elapsed_finish / t½) - 0.5^(elapsed_start / t½)]
+    // Dispatches on absorptionModel:
+    //   0 = Instant: original window-integral decay model
+    //   1 = Standard: one-compartment PK with global food state
+    //   2 = Precision: one-compartment PK with per-dose food state
     //
     // Returns mg as a Float.
     static function calcCurrentMg(settings as Dictionary) as Float {
-        var halfLifeHrs = settings["halfLifeHrs"] as Float;
-        var nowSec      = Time.now().value().toNumber();
-        var ln2         = Math.log(2.0, Math.E).toFloat();
-        var total       = 0.0f;
+        var halfLifeHrs       = settings["halfLifeHrs"] as Float;
+        var absorptionModel   = settings.hasKey("absorptionModel")   ? settings["absorptionModel"]   as Number : 0;
+        var standardFoodState = settings.hasKey("standardFoodState") ? settings["standardFoodState"] as Number : 1;
+        var nowSec            = Time.now().value().toNumber();
+        var ln2               = Math.log(2.0, Math.E).toFloat();
+        var ke                = ln2 / halfLifeHrs;  // elimination rate constant (h⁻¹)
+        var total             = 0.0f;
 
         var dateStrings = [] as Array<String>;
         dateStrings.add(todayKey());
@@ -436,22 +537,37 @@ class StimTrackerStorage {
                 if (elapsedStartHrs > halfLifeHrs * 7.0f) { continue; }
 
                 var remaining;
-                if (finishSec <= startSec) {
-                    // ── Instant dose ────────────────────────────────────
-                    remaining = caffMg * Math.pow(0.5, elapsedStartHrs / halfLifeHrs).toFloat();
-                } else {
-                    // ── Window dose (integral formula) ──────────────────
-                    var durHrs = (finishSec - startSec).toFloat() / 3600.0f;
-                    var coeff  = caffMg / durHrs * (halfLifeHrs / ln2);
-                    if (nowSec < finishSec) {
-                        // Still absorbing
-                        remaining = coeff * (1.0f - Math.pow(0.5, elapsedStartHrs / halfLifeHrs).toFloat());
+                if (absorptionModel == 0) {
+                    if (finishSec <= startSec) {
+                        // Instant model: instant dose
+                        remaining = caffMg * Math.pow(0.5, elapsedStartHrs / halfLifeHrs).toFloat();
                     } else {
-                        var elapsedFinishHrs = (nowSec - finishSec).toFloat() / 3600.0f;
-                        remaining = coeff * (Math.pow(0.5, elapsedFinishHrs / halfLifeHrs).toFloat()
-                                           - Math.pow(0.5, elapsedStartHrs / halfLifeHrs).toFloat());
+                        // Instant model: window dose (integral formula)
+                        var durHrs = (finishSec - startSec).toFloat() / 3600.0f;
+                        var coeff  = caffMg / durHrs * (halfLifeHrs / ln2);
+                        if (nowSec < finishSec) {
+                            remaining = coeff * (1.0f - Math.pow(0.5, elapsedStartHrs / halfLifeHrs).toFloat());
+                        } else {
+                            var elapsedFinishHrs = (nowSec - finishSec).toFloat() / 3600.0f;
+                            remaining = coeff * (Math.pow(0.5, elapsedFinishHrs / halfLifeHrs).toFloat()
+                                               - Math.pow(0.5, elapsedStartHrs / halfLifeHrs).toFloat());
+                        }
+                        if (remaining < 0.0f) { remaining = 0.0f; }
                     }
-                    if (remaining < 0.0f) { remaining = 0.0f; }
+                } else {
+                    // PK absorption model (Standard or Precision)
+                    var evtDict  = evt as Dictionary;
+                    var doseType = evtDict.hasKey("type")      ? evtDict["type"]      as String : "drink";
+                    var fs;
+                    if (absorptionModel == 2) {
+                        fs = evtDict.hasKey("foodState") ? evtDict["foodState"] as Number : 1;
+                    } else {
+                        fs = standardFoodState;
+                    }
+                    var ka = getKa(doseType, fs);
+                    var windowHrs = (finishSec - startSec).toFloat() / 3600.0f;
+                    if (windowHrs < 0.0f || doseType.equals("pill")) { windowHrs = 0.0f; }
+                    remaining = calcAbsorbedMg(caffMg, ka, ke, elapsedStartHrs, windowHrs);
                 }
                 total += remaining;
             }
