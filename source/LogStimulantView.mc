@@ -70,8 +70,12 @@ class LogStimulantView extends WatchUi.View {
                 var wouldExceedLimit = (todayMg + caffMg) > limitMg;
                 var wouldExceedOops  = false;
                 if (oopsMg != null) {
-                    var futureInSystem = StimTrackerStorage.previewCurrentMgAfterDose(caffMg, _settings);
-                    wouldExceedOops = futureInSystem > (oopsMg as Float);
+                    var dType = p.hasKey("type") ? p["type"] as String : "drink";
+                    var absM  = _settings.hasKey("absorptionModel") ? _settings["absorptionModel"] as Number : 0;
+                    var fs    = (absM == 1 && _settings.hasKey("standardFoodState"))
+                        ? _settings["standardFoodState"] as Number : 1;
+                    var peakI = StimTrackerStorage.previewPeakInfo(caffMg, dType, fs, _settings);
+                    wouldExceedOops = (peakI[0] as Float) > (oopsMg as Float);
                 }
 
                 var rowColor = Graphics.COLOR_WHITE;

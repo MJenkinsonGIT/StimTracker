@@ -29,44 +29,33 @@ class StimTrackerServiceDelegate extends System.ServiceDelegate {
     }
 
     // Called by the system when the temporal background event fires.
+    // No rescheduling needed — registered as a Duration so the OS repeats automatically.
     function onTemporalEvent() as Void {
         _pushComplication();
-        _scheduleNext();
         Background.exit(null);
     }
 
     // ── Complication push ───────────────────────────────────────────────────
 
     private function _pushComplication() as Void {
-        var currentMg = _calcCurrentMg();
+        var nowSec      = Time.now().value().toNumber();
+        var currentMg   = _calcMgAt(nowSec);
+        var mg60        = _calcMgAt(nowSec + 60);
+        var mg900       = _calcMgAt(nowSec + 900);
+        var trendLevel  = 0;
+        if (mg60 > currentMg + 0.01f) {
+            trendLevel = (mg900 > currentMg) ? 2 : 1;
+        } else if (mg60 < currentMg - 0.01f) {
+            trendLevel = ((currentMg - mg900) > 3.0f) ? -2 : -1;
+        }
+        var trendPrefix = trendLevel ==  2 ? "^^" : trendLevel ==  1 ? "^" :
+                          trendLevel == -2 ? "vv" : trendLevel == -1 ? "v" : "";
         try {
             Complications.updateComplication(0, {
-                :value => currentMg.toNumber(),
-                :unit  => "mg"
+                :value => trendPrefix + currentMg.toNumber().toString() + "mg"
             } as Complications.Data);
         } catch (e) {
             // Complication not subscribed or unavailable — ignore silently.
-        }
-    }
-
-    // ── Temporal event scheduling ───────────────────────────────────────────
-
-    private function _scheduleNext() as Void {
-        var fiveMin  = new Time.Duration(5 * 60);
-        var lastTime = Background.getLastTemporalEventTime();
-        var nextTime;
-        if (lastTime != null) {
-            nextTime = lastTime.add(fiveMin);
-        } else {
-            nextTime = Time.now().add(fiveMin);
-        }
-        try {
-            Background.registerForTemporalEvent(nextTime);
-        } catch (e instanceof Background.InvalidBackgroundTimeException) {
-            // Ran more recently than allowed — schedule 5 min from now instead.
-            try {
-                Background.registerForTemporalEvent(Time.now().add(fiveMin));
-            } catch (e2) { }
         }
     }
 
@@ -76,7 +65,7 @@ class StimTrackerServiceDelegate extends System.ServiceDelegate {
     // absorption modes and the corrected window formula (R/(ka-ke), not
     // R*ka/(ke*(ka-ke))). Update both locations if the formula changes.
 
-    private function _calcCurrentMg() as Float {
+    private function _calcMgAt(asOfSec as Number) as Float {
         var stored = Application.Storage.getValue("settings");
         if (stored == null) { return 0.0f; }
         var s = stored as Dictionary;
@@ -84,7 +73,6 @@ class StimTrackerServiceDelegate extends System.ServiceDelegate {
         var halfLifeHrs       = s["halfLifeHrs"] as Float;
         var absorptionModel   = s.hasKey("absorptionModel")   ? s["absorptionModel"]   as Number : 0;
         var standardFoodState = s.hasKey("standardFoodState") ? s["standardFoodState"] as Number : 1;
-        var nowSec            = Time.now().value().toNumber();
         var ln2               = Math.log(2.0, Math.E).toFloat();
         var ke                = ln2 / halfLifeHrs;
         var total             = 0.0f;
@@ -109,7 +97,7 @@ class StimTrackerServiceDelegate extends System.ServiceDelegate {
                     continue;
                 }
 
-                var elapsedStartHrs = (nowSec - startSec).toFloat() / 3600.0f;
+                var elapsedStartHrs = (asOfSec - startSec).toFloat() / 3600.0f;
                 if (elapsedStartHrs < 0.0f || elapsedStartHrs >= halfLifeHrs * 7.0f) { continue; }
 
                 var remaining;
@@ -120,10 +108,10 @@ class StimTrackerServiceDelegate extends System.ServiceDelegate {
                     } else {
                         var durHrs = (finishSec - startSec).toFloat() / 3600.0f;
                         var coeff  = caffMg / durHrs * (halfLifeHrs / ln2);
-                        if (nowSec < finishSec) {
+                        if (asOfSec < finishSec) {
                             remaining = coeff * (1.0f - Math.pow(0.5, elapsedStartHrs / halfLifeHrs).toFloat());
                         } else {
-                            var elapsedFinishHrs = (nowSec - finishSec).toFloat() / 3600.0f;
+                            var elapsedFinishHrs = (asOfSec - finishSec).toFloat() / 3600.0f;
                             remaining = coeff * (Math.pow(0.5, elapsedFinishHrs / halfLifeHrs).toFloat()
                                                - Math.pow(0.5, elapsedStartHrs / halfLifeHrs).toFloat());
                         }

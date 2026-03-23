@@ -43,15 +43,39 @@ class PreviewView extends WatchUi.View {
         var oopsMg    = _settings["oopsThresholdMg"];
         var todayMg   = StimTrackerStorage.calcTodayTotalMg();
 
-        var futureTotal     = todayMg + caffMg;
-        var futureInSystem  = StimTrackerStorage.previewCurrentMgAfterDose(caffMg, _settings);
-        var futureSleepMins = StimTrackerStorage.previewMinutesAfterDose(caffMg, _settings);
-        var futureSleepStr  = StimTrackerStorage.formatSleepTime(futureSleepMins);
+        var futureTotal = todayMg + caffMg;
+
+        // Resolve dose type and food state for PK preview
+        var doseType = (_profile as Dictionary).hasKey("type")
+            ? (_profile as Dictionary)["type"] as String : "drink";
+        var absModel = _settings.hasKey("absorptionModel") ? _settings["absorptionModel"] as Number : 0;
+        var previewFs;
+        if (absModel == 1) {
+            previewFs = _settings.hasKey("standardFoodState") ? _settings["standardFoodState"] as Number : 1;
+        } else {
+            previewFs = _foodState;
+        }
+
+        // Peak info: [peakMg, peakSec]
+        var peakInfo  = StimTrackerStorage.previewPeakInfo(caffMg, doseType, previewFs, _settings);
+        var peakMg    = peakInfo[0] as Float;
+        var peakSec   = peakInfo[1] as Number;
+        var threshMg  = (_settings["sleepThresholdMg"] as Number).toFloat();
+        var halfLife  = _settings["halfLifeHrs"] as Float;
+        var ln2       = Math.log(2.0, Math.E).toFloat();
+        var futureSleepStr;
+        if (peakMg <= threshMg) {
+            futureSleepStr = "Now";
+        } else {
+            var hoursFromPeak  = halfLife * (Math.log(peakMg / threshMg, Math.E) / ln2).toFloat();
+            var futureSleepSec = peakSec + (hoursFromPeak * 3600.0f).toNumber();
+            futureSleepStr = StimTrackerStorage.formatSleepSec(futureSleepSec);
+        }
 
         var exceedsLimit = futureTotal > limitMg;
         var exceedsOops  = false;
         if (oopsMg != null) {
-            exceedsOops = futureInSystem > (oopsMg as Float);
+            exceedsOops = peakMg > (oopsMg as Float);
         }
 
         // ── Header: caffeine first (grey), then name (white) ─────────────
@@ -77,7 +101,7 @@ class PreviewView extends WatchUi.View {
         }
 
         // ── Preview numbers ───────────────────────────────────────────────
-        var sleepLabel = futureSleepMins < 0
+        var sleepLabel = peakMg <= threshMg
             ? "Below Sleep Threshold: Now"
             : "Below Sleep Threshold: " + futureSleepStr;
         var yBase = 153;
@@ -92,7 +116,7 @@ class PreviewView extends WatchUi.View {
 
         dc.setColor(Graphics.COLOR_YELLOW, Graphics.COLOR_TRANSPARENT);
         dc.drawText(CX, yBase + 60, Graphics.FONT_XTINY,
-            "~" + futureInSystem.toNumber().toString() + "mg in system",
+            "Peak: " + peakMg.toNumber().toString() + "mg at " + StimTrackerStorage.formatSleepSec(peakSec),
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
         dc.setColor(Graphics.COLOR_GREEN, Graphics.COLOR_TRANSPARENT);

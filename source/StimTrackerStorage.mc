@@ -50,7 +50,15 @@ class StimTrackerStorage {
     static function loadSettings() as Dictionary {
         var stored = Application.Storage.getValue("settings");
         if (stored != null) {
-            return stored as Dictionary;
+            var s = stored as Dictionary;
+            // Migrate: add keys introduced after initial release
+            var changed = false;
+            if (!s.hasKey("drinkTimeEstimateMin")) {
+                s["drinkTimeEstimateMin"] = 30;
+                changed = true;
+            }
+            if (changed) { saveSettings(s); }
+            return s;
         }
         // First run — build defaults
         var defaults = buildDefaultSettings();
@@ -97,8 +105,9 @@ class StimTrackerStorage {
             "bedtimeMinutes"    => bedtimeMinutes,
             "oopsThresholdMg"   => null,
             "nextProfileId"     => 8,   // first user-created profile gets ID 8
-            "absorptionModel"   => 0,   // 0=Instant, 1=Standard, 2=Precision
-            "standardFoodState" => 1    // 0=Fasted, 1=Typical, 2=WithFood (Standard sub-setting)
+            "absorptionModel"      => 0,   // 0=Instant, 1=Standard, 2=Precision
+            "standardFoodState"   => 1,   // 0=Fasted, 1=Typical, 2=WithFood (Standard sub-setting)
+            "drinkTimeEstimateMin" => 30  // Assumed drink window when finish time is unknown
         } as Dictionary;
     }
 
@@ -489,26 +498,54 @@ class StimTrackerStorage {
         return result;
     }
 
-    // Calculate total caffeine currently in system.
+    // Thin wrapper — computes mg at the current moment.
+    static function calcCurrentMg(settings as Dictionary) as Float {
+        return calcMgAt(settings, Time.now().value().toNumber());
+    }
+
+    // Returns the trend level for the caffeine curve:
+    //   2  = rising now, will still be rising in 15 min  (↑↑)
+    //   1  = rising now, will have peaked within 15 min  (↑)
+    //   0  = flat / negligible                           (no arrow)
+    //  -1  = falling, but rate < 3mg/15min — shallow tail (↓)
+    //  -2  = falling, rate ≥ 3mg/15min — steep descent   (↓↓)
+    //
+    // Direction uses a 60-second look-ahead with a 0.01mg deadband to avoid
+    // a false flat reading right at the absorption peak. The 15-minute
+    // comparison uses calcMgAt(t+900) for the double-arrow thresholds.
+    static function calcTrendLevel(settings as Dictionary) as Number {
+        var nowSec = Time.now().value().toNumber();
+        var nowMg  = calcMgAt(settings, nowSec);
+        var mg60   = calcMgAt(settings, nowSec + 60);
+        var mg900  = calcMgAt(settings, nowSec + 900);
+        if (mg60 > nowMg + 0.01f) {
+            // Currently rising
+            return (mg900 > nowMg) ? 2 : 1;
+        }
+        if (mg60 < nowMg - 0.01f) {
+            // Currently falling — check rate over next 15 min
+            return ((nowMg - mg900) > 3.0f) ? -2 : -1;
+        }
+        return 0;
+    }
+
+    // Core PK calculation engine — computes total mg in system as of asOfSec.
     //
     // Dispatches on absorptionModel:
     //   0 = Instant: original window-integral decay model
     //   1 = Standard: one-compartment PK with global food state
     //   2 = Precision: one-compartment PK with per-dose food state
-    //
-    // Returns mg as a Float.
-    static function calcCurrentMg(settings as Dictionary) as Float {
+    static function calcMgAt(settings as Dictionary, asOfSec as Number) as Float {
         var halfLifeHrs       = settings["halfLifeHrs"] as Float;
         var absorptionModel   = settings.hasKey("absorptionModel")   ? settings["absorptionModel"]   as Number : 0;
         var standardFoodState = settings.hasKey("standardFoodState") ? settings["standardFoodState"] as Number : 1;
-        var nowSec            = Time.now().value().toNumber();
         var ln2               = Math.log(2.0, Math.E).toFloat();
         var ke                = ln2 / halfLifeHrs;  // elimination rate constant (h⁻¹)
         var total             = 0.0f;
 
-        var dateStrings = [] as Array<String>;
-        dateStrings.add(todayKey());
-        dateStrings.add(_yesterdayKey());
+        // Use the full day index so doses from 2+ days ago that are still
+        // within the 7-half-life window are included in the calculation.
+        var dateStrings = loadDayIndex();
 
         for (var d = 0; d < dateStrings.size(); d++) {
             var events = loadDayLog(dateStrings[d] as String);
@@ -529,7 +566,7 @@ class StimTrackerStorage {
 
                 var caffMg = (evt["caffeineMg"] as Number).toFloat();
 
-                var elapsedStartSec = nowSec - startSec;
+                var elapsedStartSec = asOfSec - startSec;
                 if (elapsedStartSec < 0) { elapsedStartSec = 0; }
                 var elapsedStartHrs = elapsedStartSec.toFloat() / 3600.0f;
 
@@ -545,10 +582,10 @@ class StimTrackerStorage {
                         // Instant model: window dose (integral formula)
                         var durHrs = (finishSec - startSec).toFloat() / 3600.0f;
                         var coeff  = caffMg / durHrs * (halfLifeHrs / ln2);
-                        if (nowSec < finishSec) {
+                        if (asOfSec < finishSec) {
                             remaining = coeff * (1.0f - Math.pow(0.5, elapsedStartHrs / halfLifeHrs).toFloat());
                         } else {
-                            var elapsedFinishHrs = (nowSec - finishSec).toFloat() / 3600.0f;
+                            var elapsedFinishHrs = (asOfSec - finishSec).toFloat() / 3600.0f;
                             remaining = coeff * (Math.pow(0.5, elapsedFinishHrs / halfLifeHrs).toFloat()
                                                - Math.pow(0.5, elapsedStartHrs / halfLifeHrs).toFloat());
                         }
@@ -585,40 +622,201 @@ class StimTrackerStorage {
         return total;
     }
 
-    // Project the time (minutes from now) until current-in-system drops
-    // below the sleep threshold.
-    // Returns minutes as a Number, or -1 if already below threshold.
+    // Returns minutes from now until the system will fall below sleepThresholdMg.
+    // Accounts for doses still absorbing by finding the combined peak first.
+    // Includes pending recording using drinkTimeEstimateMin as projected finish.
+    // Returns -1 if already below threshold.
     static function minutesUntilSleepSafe(settings as Dictionary) as Number {
+        var nowSec   = Time.now().value().toNumber();
+        var sleepSec = calcSleepSafeSec(settings);
+        if (sleepSec < 0) { return -1; }
+        return (sleepSec - nowSec) / 60;
+    }
+
+    // Returns absolute Unix timestamp when system will drop below sleepThresholdMg,
+    // accounting for the full absorption curve and any pending recording.
+    // Returns -1 if already at or below threshold.
+    static function calcSleepSafeSec(settings as Dictionary) as Number {
+        var peakInfo    = calcPeakInfo(settings);
+        var peakMg      = peakInfo[0] as Float;
+        var peakSec     = peakInfo[1] as Number;
         var thresholdMg = (settings["sleepThresholdMg"] as Number).toFloat();
-        var currentMg   = calcCurrentMg(settings);
-        if (currentMg <= thresholdMg) {
-            return -1;  // already safe
-        }
-        var halfLifeHrs = settings["halfLifeHrs"] as Float;
-        // Solve: threshold = current * 0.5^(t/halfLife)
-        // t = halfLife * log2(current / threshold)
-        // log2(x) = ln(x) / ln(2)
-        var ratio      = currentMg / thresholdMg;
-        var hoursNeeded = halfLifeHrs * (Math.log(ratio, Math.E) / Math.log(2.0, Math.E)).toFloat();
-        return (hoursNeeded * 60.0f).toNumber();
+        if (peakMg <= thresholdMg) { return -1; }
+        var halfLifeHrs  = settings["halfLifeHrs"] as Float;
+        var ln2          = Math.log(2.0, Math.E).toFloat();
+        var hoursFromPeak = halfLifeHrs * (Math.log(peakMg / thresholdMg, Math.E) / ln2).toFloat();
+        return peakSec + (hoursFromPeak * 3600.0f).toNumber();
     }
 
-    // Preview: what would currentMg be immediately after adding a new dose?
-    static function previewCurrentMgAfterDose(caffeineMg as Number, settings as Dictionary) as Float {
-        return calcCurrentMg(settings) + caffeineMg.toFloat();
+    // Formats an absolute Unix timestamp as a local clock time string "H:MMam/pm".
+    // Uses System.getClockTime() for the local time base to avoid UTC issues
+    // with Gregorian.info (which uses UTC per KB timezone bug).
+    static function formatSleepSec(sleepSec as Number) as String {
+        var nowSec    = Time.now().value().toNumber();
+        var minsFromNow = (sleepSec - nowSec) / 60;
+        return formatSleepTime(minsFromNow);
     }
 
-    // Preview: what would sleep-safe minutes be after adding a dose?
-    static function previewMinutesAfterDose(caffeineMg as Number, settings as Dictionary) as Number {
-        var thresholdMg  = (settings["sleepThresholdMg"] as Number).toFloat();
-        var futureCurrentMg = calcCurrentMg(settings) + caffeineMg.toFloat();
-        if (futureCurrentMg <= thresholdMg) {
-            return -1;
+    // Returns [peakMg as Float, peakSec as Number] — the highest combined caffeine
+    // level and the time it occurs, including any pending recording projected
+    // to finish at startSec + drinkTimeEstimateMin (or nowSec if overdue).
+    static function calcPeakInfo(settings as Dictionary) as Array {
+        var nowSec  = Time.now().value().toNumber();
+        var pending = loadPendingDose();
+        if (pending == null) {
+            return _findPeak(settings, nowSec, false, 0, 0, 0.0f, 0, "drink", 1);
         }
+        var drinkEst = settings.hasKey("drinkTimeEstimateMin")
+            ? settings["drinkTimeEstimateMin"] as Number : 30;
+        var pStart  = pending["startSec"] as Number;
+        var pFinish = pStart + drinkEst * 60;
+        if (pFinish < nowSec) { pFinish = nowSec; }  // overdue: use current time
+        var pCaffMg = (pending["caffeineMg"] as Number).toFloat();
+        var pType   = pending.hasKey("type")      ? pending["type"]      as String : "drink";
+        var pFs     = pending.hasKey("foodState") ? pending["foodState"] as Number : 1;
+        var pModel  = settings.hasKey("absorptionModel") ? settings["absorptionModel"] as Number : 0;
+        return _findPeak(settings, nowSec, true, pStart, pFinish, pCaffMg, pModel, pType, pFs);
+    }
+
+    // Returns [peakMg as Float, peakSec as Number] after adding a hypothetical
+    // new instant dose (start=finish=now) on top of all logged doses.
+    // Used by the Preview screen to show peak level and when it will occur.
+    static function previewPeakInfo(caffMg as Number, doseType as String,
+                                     foodState as Number, settings as Dictionary) as Array {
+        var nowSec   = Time.now().value().toNumber();
+        var absModel = settings.hasKey("absorptionModel") ? settings["absorptionModel"] as Number : 0;
+        return _findPeak(settings, nowSec, true, nowSec, nowSec, caffMg.toFloat(),
+                         absModel, doseType, foodState);
+    }
+
+    // Bisection peak-finder. Locates the time at which the combined curve
+    // (all logged doses + optional extra synthetic dose) reaches its maximum.
+    //
+    // Algorithm: if the curve is already falling at nowSec, the peak is now.
+    // Otherwise, exponential-search for an upper bound where the curve is falling,
+    // then bisect between lo (rising) and hi (falling) for 20 iterations.
+    // Precision: ~0.17s over a 180000s window — far more than enough.
+    //
+    // hasExtra: include a synthetic dose (e.g. pending recording or preview).
+    static function _findPeak(settings as Dictionary, nowSec as Number,
+                                       hasExtra as Boolean, eStart as Number, eFinish as Number,
+                                       eCaffMg as Float, eModel as Number,
+                                       eDoseType as String, eFoodState as Number) as Array {
         var halfLifeHrs = settings["halfLifeHrs"] as Float;
-        var ratio       = futureCurrentMg / thresholdMg;
-        var hoursNeeded = halfLifeHrs * (Math.log(ratio, Math.E) / Math.log(2.0, Math.E)).toFloat();
-        return (hoursNeeded * 60.0f).toNumber();
+        var ln2 = Math.log(2.0, Math.E).toFloat();
+        var ke  = ln2 / halfLifeHrs;
+        // Pre-compute ka for extra dose (only used in PK mode)
+        var eKa = 0.0f;
+        if (hasExtra && eModel != 0) {
+            if (eDoseType.equals("drink")) {
+                eKa = (eFoodState == 0) ? 3.5f : ((eFoodState == 2) ? 2.0f : 2.75f);
+            } else {
+                eKa = (eFoodState == 0) ? 1.75f : ((eFoodState == 2) ? 1.0f : 1.375f);
+            }
+        }
+
+        // Early-exit: if no extra dose and the curve is already falling, peak is now.
+        // Skipped when hasExtra because at t=0 a new PK-mode dose contributes 0mg
+        // (elapsedHrs=0 → ke_d=ka_d=1 → contribution=0), so the existing-dose
+        // falloff would incorrectly trigger the early exit before the new dose peaks.
+        if (!hasExtra) {
+            var mgNow = _mgForBisect(settings, nowSec,      false, 0, 0, 0.0f, 0, eKa, ke, ln2, halfLifeHrs);
+            var mg60  = _mgForBisect(settings, nowSec + 60, false, 0, 0, 0.0f, 0, eKa, ke, ln2, halfLifeHrs);
+            if (mg60 <= mgNow) {
+                return [mgNow, nowSec] as Array;  // peak is at or before now
+            }
+        }
+
+        // Exponential search for upper bound where curve is falling
+        var hiSec  = nowSec + 3600;
+        var maxSec = nowSec + (halfLifeHrs * 10.0f * 3600.0f).toNumber();
+        while (hiSec < maxSec) {
+            var mgHi   = _mgForBisect(settings, hiSec,      hasExtra, eStart, eFinish, eCaffMg, eModel, eKa, ke, ln2, halfLifeHrs);
+            var mgHi60 = _mgForBisect(settings, hiSec + 60, hasExtra, eStart, eFinish, eCaffMg, eModel, eKa, ke, ln2, halfLifeHrs);
+            if (mgHi60 < mgHi) { break; }
+            hiSec += 3600;
+        }
+
+        // Bisect: loSec is always rising, hiSec is always falling
+        var loSec = nowSec;
+        for (var i = 0; i < 20; i++) {
+            var midSec  = loSec + (hiSec - loSec) / 2;  // safe midpoint
+            var mgMid   = _mgForBisect(settings, midSec,      hasExtra, eStart, eFinish, eCaffMg, eModel, eKa, ke, ln2, halfLifeHrs);
+            var mgMid60 = _mgForBisect(settings, midSec + 60, hasExtra, eStart, eFinish, eCaffMg, eModel, eKa, ke, ln2, halfLifeHrs);
+            if (mgMid60 > mgMid) { loSec = midSec; } else { hiSec = midSec; }
+        }
+
+        var peakSec = loSec + (hiSec - loSec) / 2;  // safe midpoint avoids integer overflow
+        var peakMg  = _mgForBisect(settings, peakSec, hasExtra, eStart, eFinish, eCaffMg, eModel, eKa, ke, ln2, halfLifeHrs);
+        return [peakMg, peakSec] as Array;
+    }
+
+    // Combined mg at asOfSec: all logged doses + optional extra dose.
+    static function _mgForBisect(settings as Dictionary, asOfSec as Number,
+                                          hasExtra as Boolean, eStart as Number, eFinish as Number,
+                                          eCaffMg as Float, eModel as Number, eKa as Float,
+                                          ke as Float, ln2 as Float, halfLifeHrs as Float) as Float {
+        var base = calcMgAt(settings, asOfSec);
+        if (!hasExtra || eCaffMg <= 0.0f) { return base; }
+        return base + _extraDoseMgAt(asOfSec, eStart, eFinish, eCaffMg, eModel, eKa, ke, ln2, halfLifeHrs);
+    }
+
+    // PK contribution of a single extra dose (not yet in storage) at asOfSec.
+    static function _extraDoseMgAt(asOfSec as Number, startSec as Number, finishSec as Number,
+                                            caffMg as Float, absorptionModel as Number,
+                                            ka as Float, ke as Float, ln2 as Float,
+                                            halfLifeHrs as Float) as Float {
+        var elapsedHrs = (asOfSec - startSec).toFloat() / 3600.0f;
+        if (elapsedHrs < 0.0f || elapsedHrs >= halfLifeHrs * 7.0f) { return 0.0f; }
+        if (absorptionModel == 0) {
+            // Instant window model
+            if (finishSec <= startSec) {
+                return caffMg * Math.pow(0.5, elapsedHrs / halfLifeHrs).toFloat();
+            }
+            var durHrs = (finishSec - startSec).toFloat() / 3600.0f;
+            var coeff  = caffMg / durHrs * (halfLifeHrs / ln2);
+            if (asOfSec < finishSec) {
+                return coeff * (1.0f - Math.pow(0.5, elapsedHrs / halfLifeHrs).toFloat());
+            }
+            var finEl = (asOfSec - finishSec).toFloat() / 3600.0f;
+            var res = coeff * (Math.pow(0.5, finEl / halfLifeHrs).toFloat()
+                             - Math.pow(0.5, elapsedHrs / halfLifeHrs).toFloat());
+            return res > 0.0f ? res : 0.0f;
+        } else {
+            // PK absorption model
+            var diff = ka - ke;
+            if (diff < 0.0f) { diff = -diff; }
+            if (diff < 0.001f) {
+                return caffMg * Math.pow(0.5, elapsedHrs * ke / ln2).toFloat();
+            }
+            var windowHrs = (finishSec - startSec).toFloat() / 3600.0f;
+            if (windowHrs < 0.0f) { windowHrs = 0.0f; }
+            if (windowHrs <= 0.0f) {
+                var ke_d = Math.pow(0.5, elapsedHrs * ke / ln2).toFloat();
+                var ka_d = Math.pow(0.5, elapsedHrs * ka / ln2).toFloat();
+                var res  = caffMg * (ka / (ka - ke)) * (ke_d - ka_d);
+                return res > 0.0f ? res : 0.0f;
+            }
+            var T = windowHrs;
+            var R = caffMg / T;
+            if (elapsedHrs <= T) {
+                var ke_d = Math.pow(0.5, elapsedHrs * ke / ln2).toFloat();
+                var ka_d = Math.pow(0.5, elapsedHrs * ka / ln2).toFloat();
+                var res  = (R / ke) * (1.0f - ke_d) - R / (ka - ke) * (ke_d - ka_d);
+                return res > 0.0f ? res : 0.0f;
+            } else {
+                var ke_T    = Math.pow(0.5, T * ke / ln2).toFloat();
+                var ka_T    = Math.pow(0.5, T * ka / ln2).toFloat();
+                var A_gut_T = (R / ka) * (1.0f - ka_T);
+                var A_bdy_T = (R / ke) * (1.0f - ke_T) - R / (ka - ke) * (ke_T - ka_T);
+                if (A_bdy_T < 0.0f) { A_bdy_T = 0.0f; }
+                var dt    = elapsedHrs - T;
+                var ke_dt = Math.pow(0.5, dt * ke / ln2).toFloat();
+                var ka_dt = Math.pow(0.5, dt * ka / ln2).toFloat();
+                var res   = A_bdy_T * ke_dt + A_gut_T * (ka / (ka - ke)) * (ke_dt - ka_dt);
+                return res > 0.0f ? res : 0.0f;
+            }
+        }
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────

@@ -26,6 +26,7 @@ class SettingsView extends WatchUi.View {
     static const ITEM_RESET_TODAY      = 5;
     static const ITEM_ABSORPTION_MODEL = 6;
     static const ITEM_STANDARD_FOOD    = 7;
+    static const ITEM_DRINK_TIME       = 8;
 
     function initialize(settings as Dictionary) {
         View.initialize();
@@ -81,6 +82,7 @@ class SettingsView extends WatchUi.View {
         var oopsMg      = _settings["oopsThresholdMg"];
         var absModel    = _settings.hasKey("absorptionModel")   ? _settings["absorptionModel"]   as Number : 0;
         var stdFood     = _settings.hasKey("standardFoodState") ? _settings["standardFoodState"] as Number : 1;
+        var drinkEst    = _settings.hasKey("drinkTimeEstimateMin") ? _settings["drinkTimeEstimateMin"] as Number : 30;
 
         var bedH    = bedtimeMins / 60;
         var bedM    = bedtimeMins % 60;
@@ -110,6 +112,9 @@ class SettingsView extends WatchUi.View {
                       : stdFood == 2 ? "With Food"
                       : "Typical";
             items.add(["Absorption Profile", fsStr, ITEM_STANDARD_FOOD] as Array);
+        }
+        if (absModel != 0) {
+            items.add(["Drink Time Estimate", drinkEst.toString() + " min", ITEM_DRINK_TIME] as Array);
         }
         items.add(["Reset Today's Log",     "Tap to clear",                      ITEM_RESET_TODAY]  as Array);
         return items;
@@ -215,6 +220,10 @@ class SettingsDelegate extends WatchUi.BehaviorDelegate {
             _settings["standardFoodState"] = (cur + 1) % 3;
             StimTrackerStorage.saveSettings(_settings);
             WatchUi.requestUpdate();
+        } else if (typeId == SettingsView.ITEM_DRINK_TIME) {
+            var cur = _settings.hasKey("drinkTimeEstimateMin") ? _settings["drinkTimeEstimateMin"] as Number : 30;
+            _pushNumberEditor("Drink Time Est (min)", cur, 0, 9999, 5,
+                method(:onDrinkTimePicked));
         } else if (typeId == SettingsView.ITEM_RESET_TODAY) {
             var confirm = new WatchUi.Confirmation("Clear today's log?");
             WatchUi.pushView(confirm, new ResetTodayDelegate(), WatchUi.SLIDE_UP);
@@ -242,6 +251,12 @@ class SettingsDelegate extends WatchUi.BehaviorDelegate {
 
     function onOopsPicked(value as Number) as Void {
         _settings["oopsThresholdMg"] = value.toFloat();
+        StimTrackerStorage.saveSettings(_settings);
+        WatchUi.requestUpdate();
+    }
+
+    function onDrinkTimePicked(value as Number) as Void {
+        _settings["drinkTimeEstimateMin"] = value;
         StimTrackerStorage.saveSettings(_settings);
         WatchUi.requestUpdate();
     }

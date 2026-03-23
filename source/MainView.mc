@@ -33,22 +33,49 @@ class MainView extends WatchUi.View {
         var totalMg   = StimTrackerStorage.calcTodayTotalMg();
         var currentMg = StimTrackerStorage.calcCurrentMg(_settings);
         var minsLeft  = StimTrackerStorage.minutesUntilSleepSafe(_settings);
+        var trendLevel = StimTrackerStorage.calcTrendLevel(_settings);
 
         // ── Publish complication ──────────────────────────────────────────
         if (Complications has :updateComplication) {
+            var trendPrefix = trendLevel ==  2 ? "^^" : trendLevel ==  1 ? "^" :
+                              trendLevel == -2 ? "vv" : trendLevel == -1 ? "v" : "";
             Complications.updateComplication(0, {
-                :value => currentMg.toNumber(),
-                :unit  => "mg"
+                :value => trendPrefix + currentMg.toNumber().toString() + "mg"
             } as Complications.Data);
         }
 
         // ── Large centre: current mg in system ───────────────────────────
         var currentRounded = currentMg.toNumber();
         var currentColor   = _currentColor(currentMg, limitMg);
+        var numStr         = currentRounded.toString();
         dc.setColor(currentColor, Graphics.COLOR_TRANSPARENT);
         dc.drawText(CX, CY - 129, Graphics.FONT_NUMBER_HOT,
-            currentRounded.toString(),
+            numStr,
             Graphics.TEXT_JUSTIFY_CENTER);
+
+        // Trend arrow: drawn to the left of the large number, same colour.
+        // getTextDimensions bounding box: number y=98 (no VCENTER), centre ~ y+height/2.
+        if (trendLevel != 0) {
+            var numDims = dc.getTextDimensions(numStr, Graphics.FONT_NUMBER_HOT);
+            var numW    = numDims[0] as Number;
+            var numH    = numDims[1] as Number;
+            var arrowSz = 24;
+            var arrowCX = CX - numW / 2 - arrowSz / 2 - 8;
+            var arrowCY = (CY - 129) + numH / 2;
+            var offset  = arrowSz / 2 + 3;  // ~15px between stacked arrow centres
+            if (trendLevel == 2) {
+                ArrowUtils.drawUpArrow(dc, arrowCX, arrowCY - offset, arrowSz, currentColor);
+                ArrowUtils.drawUpArrow(dc, arrowCX, arrowCY + offset, arrowSz, currentColor);
+            } else if (trendLevel == 1) {
+                ArrowUtils.drawUpArrow(dc, arrowCX, arrowCY, arrowSz, currentColor);
+            } else if (trendLevel == -2) {
+                ArrowUtils.drawDownArrow(dc, arrowCX, arrowCY - offset, arrowSz, currentColor);
+                ArrowUtils.drawDownArrow(dc, arrowCX, arrowCY + offset, arrowSz, currentColor);
+            } else {
+                ArrowUtils.drawDownArrow(dc, arrowCX, arrowCY, arrowSz, currentColor);
+            }
+        }
+
         dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
         dc.drawText(CX, CY - 9, Graphics.FONT_XTINY,
             "mg in system",
