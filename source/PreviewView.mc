@@ -20,6 +20,7 @@ class PreviewView extends WatchUi.View {
     var _startSec  as Number;  // 0 = not set (use current time at log)
     var _finishSec as Number;  // 0 = not set (instant dose)
     var _foodState as Number;  // per-dose food state for Precision mode (default Typical=1)
+    var _peakInfo  as Array or Null;  // cached [peakMg, peakSec] — recomputed on input change
 
     function initialize(profile as Dictionary, settings as Dictionary) {
         View.initialize();
@@ -27,10 +28,27 @@ class PreviewView extends WatchUi.View {
         _settings  = settings;
         _startSec  = 0;
         _finishSec = 0;
+        _peakInfo  = null;  // will be computed on first onUpdate
         // Default food state for Precision mode: global standardFoodState, else Typical
         var model = settings.hasKey("absorptionModel") ? settings["absorptionModel"] as Number : 0;
         _foodState = (model == 2 && settings.hasKey("standardFoodState"))
             ? settings["standardFoodState"] as Number : 1;
+    }
+
+    // Recomputes the cached peak info from current profile, settings, and food state.
+    // Called once on first draw, then only when setTimings/setFoodState/refreshProfile fires.
+    function _recomputePeakInfo() as Void {
+        var caffMg   = _profile["caffeineMg"] as Number;
+        var doseType = (_profile as Dictionary).hasKey("type")
+            ? (_profile as Dictionary)["type"] as String : "drink";
+        var absModel = _settings.hasKey("absorptionModel") ? _settings["absorptionModel"] as Number : 0;
+        var previewFs;
+        if (absModel == 1) {
+            previewFs = _settings.hasKey("standardFoodState") ? _settings["standardFoodState"] as Number : 1;
+        } else {
+            previewFs = _foodState;
+        }
+        _peakInfo = StimTrackerStorage.previewPeakInfo(caffMg, doseType, previewFs, _settings);
     }
 
     function onUpdate(dc as Graphics.Dc) as Void {
@@ -45,21 +63,10 @@ class PreviewView extends WatchUi.View {
 
         var futureTotal = todayMg + caffMg;
 
-        // Resolve dose type and food state for PK preview
-        var doseType = (_profile as Dictionary).hasKey("type")
-            ? (_profile as Dictionary)["type"] as String : "drink";
-        var absModel = _settings.hasKey("absorptionModel") ? _settings["absorptionModel"] as Number : 0;
-        var previewFs;
-        if (absModel == 1) {
-            previewFs = _settings.hasKey("standardFoodState") ? _settings["standardFoodState"] as Number : 1;
-        } else {
-            previewFs = _foodState;
-        }
-
-        // Peak info: [peakMg, peakSec]
-        var peakInfo  = StimTrackerStorage.previewPeakInfo(caffMg, doseType, previewFs, _settings);
-        var peakMg    = peakInfo[0] as Float;
-        var peakSec   = peakInfo[1] as Number;
+        // Peak info: cached, recomputed only when inputs change.
+        if (_peakInfo == null) { _recomputePeakInfo(); }
+        var peakMg    = (_peakInfo as Array)[0] as Float;
+        var peakSec   = (_peakInfo as Array)[1] as Number;
         var threshMg  = (_settings["sleepThresholdMg"] as Number).toFloat();
         var halfLife  = _settings["halfLifeHrs"] as Float;
         var ln2       = Math.log(2.0, Math.E).toFloat();
@@ -186,12 +193,14 @@ class PreviewView extends WatchUi.View {
     function setTimings(startSec as Number, finishSec as Number) as Void {
         _startSec  = startSec;
         _finishSec = finishSec;
+        _recomputePeakInfo();  // inputs changed — recompute
         WatchUi.requestUpdate();
     }
 
     // Update per-dose food state (called by AdjustTimeDelegate).
     function setFoodState(fs as Number) as Void {
         _foodState = fs;
+        _recomputePeakInfo();  // inputs changed — recompute
     }
 
     // Format a Unix timestamp as "H:MMam/pm" in local time
@@ -236,7 +245,8 @@ class PreviewView extends WatchUi.View {
     }
 
     function refreshProfile(profile as Dictionary) as Void {
-        _profile = profile;
+        _profile  = profile;
+        _peakInfo = null;  // invalidate — will recompute on next draw
         WatchUi.requestUpdate();
     }
 }

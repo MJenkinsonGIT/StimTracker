@@ -24,18 +24,11 @@ class StimTrackerApp extends Application.AppBase {
     }
 
     function onStart(state as Dictionary?) as Void {
-        // Guard expensive work — onStart() is called every 30s in glance mode
-        // on non-live-update devices. Only run full init in the real app.
-        var s = System.getDeviceSettings();
-        if ((s has :isGlanceModeEnabled) && s.isGlanceModeEnabled) {
-            return;
-        }
-        // Pre-load settings (initialises defaults on first run)
-        StimTrackerStorage.loadSettings();
-        // Push fresh complication data immediately when the app opens
-        _pushComplication();
-        // Ensure a background temporal event is scheduled for periodic updates
-        _scheduleBackground();
+        // Intentionally empty. onStart() runs in ALL contexts: foreground, glance,
+        // AND background. Foreground-only classes (StimTrackerStorage etc.) are
+        // stripped from the background build and calling them here crashes the
+        // background silently, killing the temporal event chain.
+        // All foreground init is done in getInitialView() (foreground-only).
     }
 
     // Wire up the background service delegate so the system can launch it
@@ -48,8 +41,9 @@ class StimTrackerApp extends Application.AppBase {
     // Called on app open so Face It has a fresh value immediately.
     private function _pushComplication() as Void {
         var settings    = StimTrackerStorage.loadSettings();
-        var currentMg   = StimTrackerStorage.calcCurrentMg(settings);
-        var trendLevel  = StimTrackerStorage.calcTrendLevel(settings);
+        var trendData   = StimTrackerStorage.calcTrendAndCurrent(settings);
+        var trendLevel  = trendData[0] as Number;
+        var currentMg   = trendData[1] as Float;
         var trendPrefix = trendLevel ==  2 ? "^^" : trendLevel ==  1 ? "^" :
                           trendLevel == -2 ? "vv" : trendLevel == -1 ? "v" : "";
         try {
@@ -61,16 +55,16 @@ class StimTrackerApp extends Application.AppBase {
         }
     }
 
-    // Register a repeating temporal background event using a Duration.
-    // Passing a Duration (not a Moment) tells the OS to fire on that interval
-    // automatically — no manual rescheduling needed. The chain cannot break.
-    private function _scheduleBackground() as Void {
-        try {
-            Background.registerForTemporalEvent(new Time.Duration(5 * 60));
-        } catch (e) { }
-    }
-
     function getInitialView() as [WatchUi.Views] or [WatchUi.Views, WatchUi.InputDelegates] {
+        // getInitialView() is ONLY called in foreground context, never in background.
+        // Register a Duration-based repeating event — the OS fires it every 5 min
+        // automatically without any rescheduling from the background.
+        // Only register if nothing is already registered, to avoid resetting the clock.
+        if (Background.getTemporalEventRegisteredTime() == null) {
+            try {
+                Background.registerForTemporalEvent(new Time.Duration(5 * 60));
+            } catch (e) { }
+        }
         var settings = StimTrackerStorage.loadSettings();
         var view     = new MainView(settings);
         var delegate = new MainDelegate(view, settings);

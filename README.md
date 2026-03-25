@@ -188,15 +188,18 @@ This situation does not arise at any of the configured `ka` values or at any rea
 
 ### Sleep Threshold Calculation
 
-The app projects forward in time from your current caffeine load, finding the earliest future moment when the decayed total drops below your configured **sleep threshold** (default: 100 mg).
+The app calculates the earliest future moment when your total caffeine load will drop below your configured **sleep threshold** (default: 100 mg). It accounts for doses that are still being absorbed — not just those already decaying — by first finding the combined curve's peak.
 
-For Instant mode (simple decay from current mg):
+**Step 1 — Find the peak** using a bisection algorithm. The combined curve of all logged doses (including any active recording, using your Drink Time Estimate as the projected finish) is searched for its maximum. The peak is located to sub-second precision in ~48 function evaluations, regardless of how many doses are logged.
+
+**Step 2 — Solve for sleep-safe time** from the peak:
 ```
-t_safe = t½ × log₂(current_mg / threshold_mg)
-       = t½ × ln(current_mg / threshold_mg) / ln(2)
+t_safe = peak_time + t½ × log₂(peak_mg / threshold_mg)
 ```
 
-The result is added to the current time to produce the **"Below Sleep Threshold: H:MMam/pm"** display. If you're already below the threshold the display shows **"Below Sleep Threshold: Now"**. Your **Bedtime** setting is used as a reference point — screens will warn you if the threshold won't be reached before bedtime.
+This is always correct, whether the curve is currently rising or falling. Before this approach, the old formula (`t½ × log₂(current_mg / threshold_mg)`) could be off by up to 3 hours for a dose still mid-absorption — because it anchored the calculation to the instantaneous level rather than the eventual peak.
+
+The result is displayed as **"Below Sleep Threshold: H:MMam/pm"** or **"Below Sleep Threshold: Now"** if already below. During an active recording the calculation uses your **Drink Time Estimate** as the projected finish time; if the recording runs over that estimate, the current time is used instead, causing the projected sleep time to slowly increase until you tap Finish.
 
 ---
 
@@ -220,7 +223,7 @@ If StimTracker consistently over- or under-estimates when you feel the effects o
 
 **The absorption model uses population-average ka values.** Individual gastric emptying rates vary. The food state toggle captures the single most significant known variable (fasted vs. fed), but other factors (meal composition, individual motility, hydration) are not modelled.
 
-**The preview calculation uses Instant mode.** The Preview screen shows what your in-system total would look like "after this dose." For Standard and Precision modes, this number is calculated using the current load plus the full new dose (instant addition) rather than projecting the absorption curve forward — the true peak occurs later. This is a known limitation; a future update will replace the single preview number with a more informative display.
+**The preview peak is calculated assuming an instant bolus.** The Preview screen computes the projected combined peak by treating the new dose as consumed all at once right now — the "worst case" peak level, as if you chugged it immediately without adjusting timing. If you use Dose Options to spread the dose over a longer window, the actual peak will be lower and later. This is by design: the preview is intentionally conservative, and the README note under Dose Options explains how recording affects the result.
 
 ---
 
@@ -238,8 +241,10 @@ Tap the glance to open the full StimTracker app.
 ### Main Screen
 The primary view. Shows:
 - **Large centre number:** Caffeine currently in your system (mg, continuously updating)
+- **Trend arrows** (↑↑ / ↑ / ↓ / ↓↓) next to the large number — shows whether your caffeine is rising, near its peak, or falling steeply
 - **"Today: X / Y mg":** Your total logged today vs. your daily limit
-- **"Below Sleep Threshold: H:MMam/pm"** or **"Below Sleep Threshold: Now":** Projected time when your caffeine load will drop below your configured sleep threshold. Displays yellow when a future time, green when already below
+- **"Below Sleep Threshold: H:MMam/pm"** or **"Below Sleep Threshold: Now":** Projected time when your caffeine load will drop below your configured sleep threshold. Displays yellow when a future time, green when already below. Shown at all times — even during an active recording (using Drink Time Estimate as the projected finish)
+- **During a recording:** The name of the drink being recorded is shown in orange above the sleep threshold line
 - **Coloured arc bar:** Visual fill of today's total vs. limit (green → orange → red as you approach and exceed the limit)
 - **Gear icon** (top-right): opens Settings
 
@@ -289,9 +294,9 @@ Displays:
 - **Drink name and caffeine amount** (top)
 - **Warning banner** (if this drink would exceed your daily limit or Oops threshold)
 - **After this drink:**
-  - New in-system estimate (mg)
-  - New today total (mg)
-  - Updated "Below Sleep Threshold" time
+  - **New today total (mg)** vs. your daily limit
+  - **Peak: Xmg at H:MMpm** — the projected maximum combined caffeine level in your system and when it occurs. Calculated using the absorption model active in Settings, treating the new dose as an instant bolus (conservative "chug it now" estimate — see [Accuracy and Limitations](#accuracy-and-limitations))
+  - **Below Sleep Threshold: H:MMpm** — when your load will drop below your sleep threshold, computed from the projected peak
 - **"Log It"** button (green) — logs the drink with the current timestamp and returns to Main
 - **"Dose Options"** button (red) — opens the Dose Options screen to adjust time, food state, or start a recording session before committing
 
@@ -430,6 +435,7 @@ A scrollable list of all configurable values. Tap any row to edit.
 | **Oops Threshold** | Your personal "too much" level. If set, profile rows turn red when the projected post-dose in-system level would exceed this. Set via the Oops button, or adjusted manually here. |
 | **Absorption Model** | `Instant` (default) / `Standard` / `Precision` — controls which pharmacokinetic model is used. See [How the Caffeine Model Works](#how-the-caffeine-model-works). |
 | **Absorption Profile** | *(Standard mode only)* Global food state: `Fasted` / `Typical` / `With Food`. Sets the `ka` value applied to every dose in Standard mode. Does not appear in Instant or Precision modes. |
+| **Drink Time Estimate** | *(Standard and Precision modes only)* How long you typically take to finish a drink, in minutes (default: 30). Used as the projected finish time when a recording is active, so the sleep threshold and peak calculations remain meaningful before you tap Finish. Set to 0 to treat all drinks as instant. |
 | **Reset Today's Log** | Clears all log entries for today (with confirmation). Does not affect history for other days. |
 
 ---
@@ -438,6 +444,29 @@ A scrollable list of all configurable values. Tap any row to edit.
 Accessible via the Oops button (red heart with white exclamation mark) on the Main screen. Use this when you notice you've consumed too much — racing heart, jitters, trouble settling, etc.
 
 The screen shows your current in-system caffeine estimate as a snapshot. Confirm to save this value as your personal **Oops Threshold** — future drinks that would push you past this level will be flagged red in the Log Stimulant list and with a warning banner in the Preview screen.
+
+---
+
+## Watch Face Complication
+
+StimTracker publishes a **Connect IQ complication** — a data slot that compatible watch faces can display directly on the watch face without the app being open. When it works, the complication shows your current caffeine in system (with trend arrows) updating automatically in the background every 5 minutes.
+
+### How it works
+
+The app runs a background service that fires every 5 minutes, recalculates your current caffeine level using the same pharmacokinetic model as the main screen, and pushes the result to the complication system. Any watch face that subscribes to complication updates will receive the new value and redraw accordingly.
+
+To use it:
+1. Install StimTracker
+2. Open the app once — this seeds the background update chain
+3. In your watch face's complication settings, find StimTracker in the list of available complications and assign it to a slot
+
+### Current limitation
+
+We've run into a compatibility issue that we haven't been able to fully resolve yet. The background service fires correctly and the complication push succeeds without error — but on the watch face we've tested, the complication slot doesn't visually update between app opens. The value shown is always from the last time StimTracker was opened, not the most recent background update.
+
+It's not yet clear whether this is a limitation of the specific watch face we tested, a subtlety in how our complication is published, or something else entirely. We need to test against a watch face that we know implements the complication subscription API correctly before we can say for certain what's happening. That testing is on our to-do list — it will likely involve building a dedicated StimTracker watch face.
+
+In the meantime, the complication does display the correct value when you open StimTracker (the foreground push always works), so if you're comfortable opening the app before checking the complication, it will be accurate at that moment.
 
 ---
 
@@ -497,8 +526,6 @@ Compatibility with other devices has not been tested.
 ## Future Plans
 
 **Graphs and trends** — Visualising your caffeine load curve over the course of a day, or your daily totals over weeks.
-
-**Improved pre-drink preview** — The current Preview screen adds the new dose as an instant bolus for simplicity. A future update will show the projected peak time and peak level under Standard/Precision models, replacing the single summary number with something that better reflects the absorption curve.
 
 **Tracking additional ingredients** — L-Theanine, Taurine, Niacin (B3), Vitamin B6, B12, L-Tyrosine, and other active compounds found in energy drinks and supplements.
 

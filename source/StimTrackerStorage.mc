@@ -23,6 +23,11 @@ class StimTrackerStorage {
 
     static const MAX_HISTORY_DAYS = 30;
 
+    // Recording-mode sleep cache (in-memory, 60-second TTL)
+    // Avoids re-running the full bisection every frame during active recording.
+    static var _recSleepCacheSec = 0;
+    static var _recSleepCacheVal = 0;
+
     // Default stimulant profiles (Phase 1 — caffeine only)
     // Each profile: { "id" => Number, "name" => String, "caffeineMg" => Number }
     static const DEFAULT_PROFILES = [
@@ -68,6 +73,7 @@ class StimTrackerStorage {
 
     static function saveSettings(settings as Dictionary) as Void {
         Application.Storage.setValue("settings", settings);
+        refreshSleepCache();
     }
 
     static function buildDefaultSettings() as Dictionary {
@@ -262,6 +268,7 @@ class StimTrackerStorage {
         Application.Storage.setValue(logKey(dateStr), events);
         _touchDayIndex(dateStr);
         pruneOldDays();
+        refreshSleepCache();
     }
 
     // Load the list of days that have log entries
@@ -328,6 +335,7 @@ class StimTrackerStorage {
         evt["foodState"]    = foodState;
         events[idx] = evt;
         Application.Storage.setValue(logKey(dateStr), events);
+        refreshSleepCache();
     }
 
     // Delete a single dose entry by index from a day's log.
@@ -350,6 +358,7 @@ class StimTrackerStorage {
         } else {
             Application.Storage.setValue(logKey(dateStr), events);
         }
+        refreshSleepCache();
     }
 
     // ── Pending Dose (Record / Finish live-recording flow) ────────────────
@@ -413,6 +422,7 @@ class StimTrackerStorage {
             }
         }
         Application.Storage.setValue("log_days", updated);
+        refreshSleepCache();
     }
 
     // ── Pharmacokinetics ───────────────────────────────────────────────────
@@ -513,20 +523,51 @@ class StimTrackerStorage {
     // Direction uses a 60-second look-ahead with a 0.01mg deadband to avoid
     // a false flat reading right at the absorption peak. The 15-minute
     // comparison uses calcMgAt(t+900) for the double-arrow thresholds.
+    // Pre-loads events once for all 3 evaluations (was 3 separate Storage scans).
     static function calcTrendLevel(settings as Dictionary) as Number {
-        var nowSec = Time.now().value().toNumber();
-        var nowMg  = calcMgAt(settings, nowSec);
-        var mg60   = calcMgAt(settings, nowSec + 60);
-        var mg900  = calcMgAt(settings, nowSec + 900);
+        var halfLifeHrs       = settings["halfLifeHrs"] as Float;
+        var absorptionModel   = settings.hasKey("absorptionModel")   ? settings["absorptionModel"]   as Number : 0;
+        var standardFoodState = settings.hasKey("standardFoodState") ? settings["standardFoodState"] as Number : 1;
+        var ln2               = Math.log(2.0, Math.E).toFloat();
+        var ke                = ln2 / halfLifeHrs;
+        var events            = _loadAllEvents();
+        var nowSec            = Time.now().value().toNumber();
+        var nowMg  = _calcMgAtFromEvents(events, nowSec,       halfLifeHrs, absorptionModel, standardFoodState, ke, ln2);
+        var mg60   = _calcMgAtFromEvents(events, nowSec + 60,  halfLifeHrs, absorptionModel, standardFoodState, ke, ln2);
+        var mg900  = _calcMgAtFromEvents(events, nowSec + 900, halfLifeHrs, absorptionModel, standardFoodState, ke, ln2);
         if (mg60 > nowMg + 0.01f) {
-            // Currently rising
             return (mg900 > nowMg) ? 2 : 1;
         }
         if (mg60 < nowMg - 0.01f) {
-            // Currently falling — check rate over next 15 min
             return ((nowMg - mg900) > 3.0f) ? -2 : -1;
         }
         return 0;
+    }
+
+    // Combined trend + current mg calculation. Loads events once from Storage
+    // and evaluates all 3 trend points plus the current level.
+    // Returns [trendLevel as Number, currentMg as Float].
+    // Used by MainView to avoid separate calcCurrentMg + calcTrendLevel calls.
+    static function calcTrendAndCurrent(settings as Dictionary) as Array {
+        var halfLifeHrs       = settings["halfLifeHrs"] as Float;
+        var absorptionModel   = settings.hasKey("absorptionModel")   ? settings["absorptionModel"]   as Number : 0;
+        var standardFoodState = settings.hasKey("standardFoodState") ? settings["standardFoodState"] as Number : 1;
+        var ln2               = Math.log(2.0, Math.E).toFloat();
+        var ke                = ln2 / halfLifeHrs;
+        var events            = _loadAllEvents();
+        var nowSec            = Time.now().value().toNumber();
+        var nowMg  = _calcMgAtFromEvents(events, nowSec,       halfLifeHrs, absorptionModel, standardFoodState, ke, ln2);
+        var mg60   = _calcMgAtFromEvents(events, nowSec + 60,  halfLifeHrs, absorptionModel, standardFoodState, ke, ln2);
+        var mg900  = _calcMgAtFromEvents(events, nowSec + 900, halfLifeHrs, absorptionModel, standardFoodState, ke, ln2);
+        var trend;
+        if (mg60 > nowMg + 0.01f) {
+            trend = (mg900 > nowMg) ? 2 : 1;
+        } else if (mg60 < nowMg - 0.01f) {
+            trend = ((nowMg - mg900) > 3.0f) ? -2 : -1;
+        } else {
+            trend = 0;
+        }
+        return [trend, nowMg] as Array;
     }
 
     // Core PK calculation engine — computes total mg in system as of asOfSec.
@@ -612,6 +653,88 @@ class StimTrackerStorage {
         return total;
     }
 
+    // ── Pre-loaded event helpers (avoid repeated Storage reads) ──────────
+
+    // Loads all dose events from all days in the day index into a flat array.
+    // One-time Storage cost (~31 reads), then the returned array can be passed
+    // to _calcMgAtFromEvents for as many evaluations as needed with zero I/O.
+    static function _loadAllEvents() as Array {
+        var dateStrings = loadDayIndex();
+        var allEvents = [] as Array;
+        for (var d = 0; d < dateStrings.size(); d++) {
+            var dayLog = loadDayLog(dateStrings[d] as String);
+            for (var i = 0; i < dayLog.size(); i++) {
+                allEvents.add(dayLog[i]);
+            }
+        }
+        return allEvents;
+    }
+
+    // Same computation as calcMgAt but operates on a pre-loaded events array
+    // instead of reading from Application.Storage on every call.
+    // Parameters ke and ln2 are pre-computed by the caller to avoid redundant
+    // Math.log calls across dozens of evaluations.
+    static function _calcMgAtFromEvents(events as Array, asOfSec as Number,
+                                        halfLifeHrs as Float, absorptionModel as Number,
+                                        standardFoodState as Number,
+                                        ke as Float, ln2 as Float) as Float {
+        var total = 0.0f;
+        for (var i = 0; i < events.size(); i++) {
+            var evt = events[i] as Dictionary;
+
+            var startSec;
+            var finishSec;
+            if (evt.hasKey("startSec")) {
+                startSec  = evt["startSec"]  as Number;
+                finishSec = evt["finishSec"] as Number;
+            } else if (evt.hasKey("timestampSec")) {
+                startSec  = evt["timestampSec"] as Number;
+                finishSec = startSec;
+            } else {
+                continue;
+            }
+
+            var caffMg = (evt["caffeineMg"] as Number).toFloat();
+            var elapsedStartSec = asOfSec - startSec;
+            if (elapsedStartSec < 0) { elapsedStartSec = 0; }
+            var elapsedStartHrs = elapsedStartSec.toFloat() / 3600.0f;
+
+            if (elapsedStartHrs > halfLifeHrs * 7.0f) { continue; }
+
+            var remaining;
+            if (absorptionModel == 0) {
+                if (finishSec <= startSec) {
+                    remaining = caffMg * Math.pow(0.5, elapsedStartHrs / halfLifeHrs).toFloat();
+                } else {
+                    var durHrs = (finishSec - startSec).toFloat() / 3600.0f;
+                    var coeff  = caffMg / durHrs * (halfLifeHrs / ln2);
+                    if (asOfSec < finishSec) {
+                        remaining = coeff * (1.0f - Math.pow(0.5, elapsedStartHrs / halfLifeHrs).toFloat());
+                    } else {
+                        var elapsedFinishHrs = (asOfSec - finishSec).toFloat() / 3600.0f;
+                        remaining = coeff * (Math.pow(0.5, elapsedFinishHrs / halfLifeHrs).toFloat()
+                                           - Math.pow(0.5, elapsedStartHrs / halfLifeHrs).toFloat());
+                    }
+                    if (remaining < 0.0f) { remaining = 0.0f; }
+                }
+            } else {
+                var doseType = evt.hasKey("type") ? evt["type"] as String : "drink";
+                var fs;
+                if (absorptionModel == 2) {
+                    fs = evt.hasKey("foodState") ? evt["foodState"] as Number : 1;
+                } else {
+                    fs = standardFoodState;
+                }
+                var ka = getKa(doseType, fs);
+                var windowHrs = (finishSec - startSec).toFloat() / 3600.0f;
+                if (windowHrs < 0.0f || doseType.equals("pill")) { windowHrs = 0.0f; }
+                remaining = calcAbsorbedMg(caffMg, ka, ke, elapsedStartHrs, windowHrs);
+            }
+            total += remaining;
+        }
+        return total;
+    }
+
     // Calculate today's total consumed (raw mg, no decay)
     static function calcTodayTotalMg() as Number {
         var events = loadDayLog(todayKey());
@@ -633,10 +756,53 @@ class StimTrackerStorage {
         return (sleepSec - nowSec) / 60;
     }
 
-    // Returns absolute Unix timestamp when system will drop below sleepThresholdMg,
-    // accounting for the full absorption curve and any pending recording.
-    // Returns -1 if already at or below threshold.
+    // Recomputes the sleep-safe timestamp and stores it in Application.Storage.
+    // Called whenever dose data or relevant settings change. Loads settings
+    // internally so callers don't need to pass them.
+    // During an active recording, the projected finish drifts over time so we
+    // do NOT cache — calcSleepSafeSec will recompute live in that case only.
+    static function refreshSleepCache() as Void {
+        // Invalidate the in-memory recording-mode cache on any mutation.
+        _recSleepCacheSec = 0;
+        var pending = loadPendingDose();
+        if (pending != null) {
+            // Don't update persistent cache while recording — value is time-dependent.
+            return;
+        }
+        var settings = loadSettings();
+        var result   = _computeSleepSafeSec(settings);
+        Application.Storage.setValue("sleep_safe_cache", result);
+    }
+
+    // Returns absolute Unix timestamp when system will drop below sleepThresholdMg.
+    // Reads from the cache written by refreshSleepCache() for speed.
+    // Falls back to a live computation if the cache is missing (first run),
+    // or recomputes live if a recording is active (time-dependent estimate).
     static function calcSleepSafeSec(settings as Dictionary) as Number {
+        if (loadPendingDose() != null) {
+            // Active recording: recompute at most once per 60 seconds.
+            // Display resolution is 1 minute, so sub-minute staleness is invisible.
+            var nowSec = Time.now().value().toNumber();
+            if (_recSleepCacheSec > 0 && (nowSec - _recSleepCacheSec) < 60) {
+                return _recSleepCacheVal;
+            }
+            var result = _computeSleepSafeSec(settings);
+            _recSleepCacheSec = nowSec;
+            _recSleepCacheVal = result;
+            return result;
+        }
+        var cached = Application.Storage.getValue("sleep_safe_cache");
+        if (cached != null) { return cached as Number; }
+        // Cache miss (first run or cleared) — compute and store.
+        var result = _computeSleepSafeSec(settings);
+        Application.Storage.setValue("sleep_safe_cache", result);
+        return result;
+    }
+
+    // Core computation: runs the bisection peak-finder and solves for sleep time.
+    // Only called by calcSleepSafeSec and refreshSleepCache — never directly
+    // from onUpdate, so the bisection only runs when data actually changes.
+    static function _computeSleepSafeSec(settings as Dictionary) as Number {
         var peakInfo    = calcPeakInfo(settings);
         var peakMg      = peakInfo[0] as Float;
         var peakSec     = peakInfo[1] as Number;
@@ -698,13 +864,23 @@ class StimTrackerStorage {
     // Precision: ~0.17s over a 180000s window — far more than enough.
     //
     // hasExtra: include a synthetic dose (e.g. pending recording or preview).
+    //
+    // Performance: loads all events from Storage ONCE at the top, then passes
+    // the pre-loaded array through all _mgForBisect calls (typically 50–100).
+    // This replaces ~1,500–3,100 Storage reads with ~31.
     static function _findPeak(settings as Dictionary, nowSec as Number,
                                        hasExtra as Boolean, eStart as Number, eFinish as Number,
                                        eCaffMg as Float, eModel as Number,
                                        eDoseType as String, eFoodState as Number) as Array {
-        var halfLifeHrs = settings["halfLifeHrs"] as Float;
+        var halfLifeHrs       = settings["halfLifeHrs"] as Float;
+        var absorptionModel   = settings.hasKey("absorptionModel")   ? settings["absorptionModel"]   as Number : 0;
+        var standardFoodState = settings.hasKey("standardFoodState") ? settings["standardFoodState"] as Number : 1;
         var ln2 = Math.log(2.0, Math.E).toFloat();
         var ke  = ln2 / halfLifeHrs;
+
+        // Pre-load all events from Storage ONCE for the entire bisection.
+        var events = _loadAllEvents();
+
         // Pre-compute ka for extra dose (only used in PK mode)
         var eKa = 0.0f;
         if (hasExtra && eModel != 0) {
@@ -720,8 +896,8 @@ class StimTrackerStorage {
         // (elapsedHrs=0 → ke_d=ka_d=1 → contribution=0), so the existing-dose
         // falloff would incorrectly trigger the early exit before the new dose peaks.
         if (!hasExtra) {
-            var mgNow = _mgForBisect(settings, nowSec,      false, 0, 0, 0.0f, 0, eKa, ke, ln2, halfLifeHrs);
-            var mg60  = _mgForBisect(settings, nowSec + 60, false, 0, 0, 0.0f, 0, eKa, ke, ln2, halfLifeHrs);
+            var mgNow = _mgForBisect(events, nowSec,      halfLifeHrs, absorptionModel, standardFoodState, ke, ln2, false, 0, 0, 0.0f, 0, eKa);
+            var mg60  = _mgForBisect(events, nowSec + 60, halfLifeHrs, absorptionModel, standardFoodState, ke, ln2, false, 0, 0, 0.0f, 0, eKa);
             if (mg60 <= mgNow) {
                 return [mgNow, nowSec] as Array;  // peak is at or before now
             }
@@ -731,8 +907,8 @@ class StimTrackerStorage {
         var hiSec  = nowSec + 3600;
         var maxSec = nowSec + (halfLifeHrs * 10.0f * 3600.0f).toNumber();
         while (hiSec < maxSec) {
-            var mgHi   = _mgForBisect(settings, hiSec,      hasExtra, eStart, eFinish, eCaffMg, eModel, eKa, ke, ln2, halfLifeHrs);
-            var mgHi60 = _mgForBisect(settings, hiSec + 60, hasExtra, eStart, eFinish, eCaffMg, eModel, eKa, ke, ln2, halfLifeHrs);
+            var mgHi   = _mgForBisect(events, hiSec,      halfLifeHrs, absorptionModel, standardFoodState, ke, ln2, hasExtra, eStart, eFinish, eCaffMg, eModel, eKa);
+            var mgHi60 = _mgForBisect(events, hiSec + 60, halfLifeHrs, absorptionModel, standardFoodState, ke, ln2, hasExtra, eStart, eFinish, eCaffMg, eModel, eKa);
             if (mgHi60 < mgHi) { break; }
             hiSec += 3600;
         }
@@ -741,22 +917,25 @@ class StimTrackerStorage {
         var loSec = nowSec;
         for (var i = 0; i < 20; i++) {
             var midSec  = loSec + (hiSec - loSec) / 2;  // safe midpoint
-            var mgMid   = _mgForBisect(settings, midSec,      hasExtra, eStart, eFinish, eCaffMg, eModel, eKa, ke, ln2, halfLifeHrs);
-            var mgMid60 = _mgForBisect(settings, midSec + 60, hasExtra, eStart, eFinish, eCaffMg, eModel, eKa, ke, ln2, halfLifeHrs);
+            var mgMid   = _mgForBisect(events, midSec,      halfLifeHrs, absorptionModel, standardFoodState, ke, ln2, hasExtra, eStart, eFinish, eCaffMg, eModel, eKa);
+            var mgMid60 = _mgForBisect(events, midSec + 60, halfLifeHrs, absorptionModel, standardFoodState, ke, ln2, hasExtra, eStart, eFinish, eCaffMg, eModel, eKa);
             if (mgMid60 > mgMid) { loSec = midSec; } else { hiSec = midSec; }
         }
 
         var peakSec = loSec + (hiSec - loSec) / 2;  // safe midpoint avoids integer overflow
-        var peakMg  = _mgForBisect(settings, peakSec, hasExtra, eStart, eFinish, eCaffMg, eModel, eKa, ke, ln2, halfLifeHrs);
+        var peakMg  = _mgForBisect(events, peakSec, halfLifeHrs, absorptionModel, standardFoodState, ke, ln2, hasExtra, eStart, eFinish, eCaffMg, eModel, eKa);
         return [peakMg, peakSec] as Array;
     }
 
-    // Combined mg at asOfSec: all logged doses + optional extra dose.
-    static function _mgForBisect(settings as Dictionary, asOfSec as Number,
+    // Combined mg at asOfSec: all logged doses (from pre-loaded events)
+    // + optional extra dose. Zero Storage I/O per call.
+    static function _mgForBisect(events as Array, asOfSec as Number,
+                                          halfLifeHrs as Float, absorptionModel as Number,
+                                          standardFoodState as Number,
+                                          ke as Float, ln2 as Float,
                                           hasExtra as Boolean, eStart as Number, eFinish as Number,
-                                          eCaffMg as Float, eModel as Number, eKa as Float,
-                                          ke as Float, ln2 as Float, halfLifeHrs as Float) as Float {
-        var base = calcMgAt(settings, asOfSec);
+                                          eCaffMg as Float, eModel as Number, eKa as Float) as Float {
+        var base = _calcMgAtFromEvents(events, asOfSec, halfLifeHrs, absorptionModel, standardFoodState, ke, ln2);
         if (!hasExtra || eCaffMg <= 0.0f) { return base; }
         return base + _extraDoseMgAt(asOfSec, eStart, eFinish, eCaffMg, eModel, eKa, ke, ln2, halfLifeHrs);
     }

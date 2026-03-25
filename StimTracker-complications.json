@@ -11,7 +11,7 @@
       "id" : 0,
       "iconContent" : "65672388.svg",
       "iconPosition" : "left",
-      "textDefault" : "000mg",
+      "textDefault" : "ComplicationLongLabel",
       "textPosition" : "right"
     } ]
   } ],

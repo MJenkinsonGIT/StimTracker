@@ -1,14 +1,21 @@
 # StimTracker — App Planning Document
 
-> **Status:** Active development — PK absorption model + gear/button UI implemented, pending full device testing
+> **Status:** Active development
 > **Last updated:** March 2026
 > **Note:** This is a working document — not the knowledge base. It contains research notes,
 > decisions in progress, and future plans. Nothing here should be treated as tested or authoritative.
 >
 > **Implementation status summary (March 2026):**
-> - §15 Absorption model: IMPLEMENTED (Phases A–E complete — storage engine, glance mirror, settings UI, params screens, per-dose food state). Pending device verification of PK behaviour (§17).
-> - §16 Dose parameters / gear icon pattern: IMPLEMENTED. Gear icon is a PNG asset (`gear_icon.png`), not a drawn IconUtils module. All params screens live in `ParamsViews.mc`. KEY_ENTER (not KEY_MENU) confirmed as the correct top-button constant on physical Venu 3. Device-confirmed: gear size good, KEY_ENTER working, hitbox ordering correct.
-> - §17 Testing checklist: PENDING — run after first device build with absorption model active.
+> - §15 Absorption model: IMPLEMENTED and device-confirmed working.
+> - §16 Dose parameters / gear icon pattern: IMPLEMENTED and device-confirmed.
+> - §17 Testing checklist: COMPLETE — absorption model device-verified.
+> - §19 Peak finder + sleep cache + preview overhaul: IMPLEMENTED and device-confirmed.
+>   drinkTimeEstimateMin setting live. Preview shows Peak: Xmg at H:MMpm.
+>   Main screen sleep threshold is stable and fast (cached).
+> - §20 Background service / complication: SHELVED pending custom watch face.
+>   Background fires correctly. updateComplication succeeds. Face It does not subscribe
+>   to updates — complication only refreshes when app is opened. Plan: build a minimal
+>   StimTracker watch face with subscribeToUpdates() as a future project.
 
 ---
 

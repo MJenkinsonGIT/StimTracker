@@ -16,13 +16,15 @@ class MainView extends WatchUi.View {
     private const CY = 227;
 
     // Shared settings reference (updated by delegate when settings change)
-    var _settings as Dictionary;
-    var _gearBmp  as WatchUi.BitmapResource;
+    var _settings  as Dictionary;
+    var _gearBmp   as WatchUi.BitmapResource;
+    var _oopsBmp   as WatchUi.BitmapResource;
 
     function initialize(settings as Dictionary) {
         View.initialize();
-        _settings = settings;
-        _gearBmp  = WatchUi.loadResource(Rez.Drawables.GearIcon) as WatchUi.BitmapResource;
+        _settings  = settings;
+        _gearBmp   = WatchUi.loadResource(Rez.Drawables.GearIcon) as WatchUi.BitmapResource;
+        _oopsBmp   = WatchUi.loadResource(Rez.Drawables.OopsHeart) as WatchUi.BitmapResource;
     }
 
     function onUpdate(dc as Graphics.Dc) as Void {
@@ -31,9 +33,11 @@ class MainView extends WatchUi.View {
 
         var limitMg   = _settings["limitMg"] as Number;
         var totalMg   = StimTrackerStorage.calcTodayTotalMg();
-        var currentMg = StimTrackerStorage.calcCurrentMg(_settings);
-        var minsLeft  = StimTrackerStorage.minutesUntilSleepSafe(_settings);
-        var trendLevel = StimTrackerStorage.calcTrendLevel(_settings);
+        // Combined call: loads events once from Storage for both current mg and trend.
+        var trendData  = StimTrackerStorage.calcTrendAndCurrent(_settings);
+        var trendLevel = trendData[0] as Number;
+        var currentMg  = trendData[1] as Float;
+        var minsLeft   = StimTrackerStorage.minutesUntilSleepSafe(_settings);
 
         // ── Publish complication ──────────────────────────────────────────
         if (Complications has :updateComplication) {
@@ -76,9 +80,9 @@ class MainView extends WatchUi.View {
             }
         }
 
+        // ── "mg in system" label ────────────────────────────────────
         dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(CX, CY - 9, Graphics.FONT_XTINY,
-            "mg in system",
+        dc.drawText(CX, CY - 9, Graphics.FONT_XTINY, "mg in system",
             Graphics.TEXT_JUSTIFY_CENTER);
 
         // ── Today total / limit ──────────────────────────────────────────
@@ -88,28 +92,52 @@ class MainView extends WatchUi.View {
             totalMg.toString() + " / " + limitMg.toString() + " mg",
             Graphics.TEXT_JUSTIFY_CENTER);
 
-        // ── Sleep-safe time or Recording indicator ──────────────────────────
+        // ── Recording indicator + sleep threshold (always shown) ────────────
         var pending = StimTrackerStorage.loadPendingDose();
+        var sleepLabelY;
+        var sleepValueY;
         if (pending != null) {
+            // Recording name with word wrap — up to two lines at FONT_XTINY
             var recName = pending["name"] as String;
             dc.setColor(Graphics.COLOR_ORANGE, Graphics.COLOR_TRANSPARENT);
-            dc.drawText(CX, 252, Graphics.FONT_XTINY, "Recording:",
-                Graphics.TEXT_JUSTIFY_CENTER);
-            dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
-            _drawRecordingName(dc, recName, 285);
+            if (recName.length() <= 20) {
+                dc.drawText(CX, 268, Graphics.FONT_XTINY, "Recording: " + recName,
+                    Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+            } else {
+                // Split at last space at/before char 20
+                var splitPos = 20;
+                while (splitPos > 0 && !(recName.substring(splitPos, splitPos + 1).equals(" "))) {
+                    splitPos--;
+                }
+                var line1;
+                var line2;
+                if (splitPos == 0) {
+                    line1 = recName.substring(0, 20);
+                    line2 = recName.substring(20, recName.length());
+                } else {
+                    line1 = recName.substring(0, splitPos);
+                    line2 = recName.substring(splitPos + 1, recName.length());
+                }
+                dc.drawText(CX, 262, Graphics.FONT_XTINY, "Recording: " + line1,
+                    Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+                dc.drawText(CX, 290, Graphics.FONT_XTINY, line2,
+                    Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+            }
+            sleepLabelY = 321;
+            sleepValueY = 354;
         } else {
-            var sleepColor = minsLeft < 0 ? Graphics.COLOR_GREEN : Graphics.COLOR_YELLOW;
-            var sleepLabel = "Below Sleep Threshold:";
-            var sleepStr   = minsLeft < 0 ? "Now" : StimTrackerStorage.formatSleepTime(minsLeft);
-            dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
-            dc.drawText(CX, 265, Graphics.FONT_XTINY,
-                sleepLabel,
-                Graphics.TEXT_JUSTIFY_CENTER);
-            dc.setColor(sleepColor, Graphics.COLOR_TRANSPARENT);
-            dc.drawText(CX, 300, Graphics.FONT_SMALL,
-                sleepStr,
-                Graphics.TEXT_JUSTIFY_CENTER);
+            sleepLabelY = 265;
+            sleepValueY = 300;
         }
+        // Sleep threshold always shown
+        var sleepColor = minsLeft < 0 ? Graphics.COLOR_GREEN : Graphics.COLOR_YELLOW;
+        var sleepStr   = minsLeft < 0 ? "Now" : StimTrackerStorage.formatSleepTime(minsLeft);
+        dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(CX, sleepLabelY, Graphics.FONT_XTINY, "Below Sleep Threshold:",
+            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+        dc.setColor(sleepColor, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(CX, sleepValueY, Graphics.FONT_SMALL, sleepStr,
+            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
         // ── Oops button (top-centre) and gear icon (top-right) ────────────
         _drawOopsButton(dc);
@@ -173,8 +201,7 @@ class MainView extends WatchUi.View {
 
     private function _drawOopsButton(dc as Graphics.Dc) as Void {
         // Heart bitmap (40x40, transparent background), centred at (CX, 40)
-        var heart = WatchUi.loadResource(Rez.Drawables.OopsHeart) as WatchUi.BitmapResource;
-        dc.drawBitmap(CX - 26, 26, heart);
+        dc.drawBitmap(CX - 26, 26, _oopsBmp);
         // White "!" centred on the heart
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
         dc.drawText(CX - 2, 30, Graphics.FONT_TINY, "!", Graphics.TEXT_JUSTIFY_CENTER);
@@ -191,34 +218,6 @@ class MainView extends WatchUi.View {
             if (rem <= 0) { continue; }
             var hw = Math.sqrt(rem.toFloat()).toNumber();
             dc.fillRectangle(CX - hw, row, hw * 2, 1);
-        }
-    }
-
-    // Draw the recording stim name at FONT_XTINY, wrapping if it would exceed
-    // the safe inner width at that y-coordinate (circle radius 210, centre 227).
-    // Splits at the last space before char 20; draws two lines 22px apart.
-    private function _drawRecordingName(dc as Graphics.Dc, name as String, y as Number) as Void {
-        if (name.length() <= 20) {
-            dc.drawText(CX, y + 14, Graphics.FONT_XTINY, name,
-                Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
-        } else {
-            var splitPos = 20;
-            while (splitPos > 0 && !(name.substring(splitPos, splitPos + 1).equals(" "))) {
-                splitPos--;
-            }
-            var line1;
-            var line2;
-            if (splitPos == 0) {
-                line1 = name.substring(0, 20);
-                line2 = name.substring(20, name.length());
-            } else {
-                line1 = name.substring(0, splitPos);
-                line2 = name.substring(splitPos + 1, name.length());
-            }
-            dc.drawText(CX, y + 18, Graphics.FONT_XTINY, line1,
-                Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
-            dc.drawText(CX, y + 45, Graphics.FONT_XTINY, line2,
-                Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
         }
     }
 

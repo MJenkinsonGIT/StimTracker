@@ -29,8 +29,10 @@ class StimTrackerServiceDelegate extends System.ServiceDelegate {
     }
 
     // Called by the system when the temporal background event fires.
-    // No rescheduling needed — registered as a Duration so the OS repeats automatically.
+    // Duration registered from foreground repeats automatically — no rescheduling needed here.
     function onTemporalEvent() as Void {
+        // DEBUG: write fire timestamp so main screen can show last background run time
+        Application.Storage.setValue("bg_last_run", Time.now().value().toNumber());
         _pushComplication();
         Background.exit(null);
     }
@@ -50,12 +52,18 @@ class StimTrackerServiceDelegate extends System.ServiceDelegate {
         }
         var trendPrefix = trendLevel ==  2 ? "^^" : trendLevel ==  1 ? "^" :
                           trendLevel == -2 ? "vv" : trendLevel == -1 ? "v" : "";
+        var compVal = trendPrefix + currentMg.toNumber().toString() + "mg";
         try {
             Complications.updateComplication(0, {
-                :value => trendPrefix + currentMg.toNumber().toString() + "mg"
+                :value => compVal
             } as Complications.Data);
+            Application.Storage.setValue("bg_comp_err", "ok:" + compVal);
+        } catch (e instanceof Toybox.Lang.OperationNotAllowedException) {
+            Application.Storage.setValue("bg_comp_err", "OperationNotAllowed");
+        } catch (e instanceof Toybox.Lang.InvalidValueException) {
+            Application.Storage.setValue("bg_comp_err", "InvalidValue");
         } catch (e) {
-            // Complication not subscribed or unavailable — ignore silently.
+            Application.Storage.setValue("bg_comp_err", "UnknownErr");
         }
     }
 
