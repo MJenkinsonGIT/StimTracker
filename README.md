@@ -225,6 +225,8 @@ If StimTracker consistently over- or under-estimates when you feel the effects o
 
 **The preview peak is calculated assuming an instant bolus.** The Preview screen computes the projected combined peak by treating the new dose as consumed all at once right now — the "worst case" peak level, as if you chugged it immediately without adjusting timing. If you use Dose Options to spread the dose over a longer window, the actual peak will be lower and later. This is by design: the preview is intentionally conservative, and the README note under Dose Options explains how recording affects the result.
 
+**The Oops warning on the list screen is approximate.** The red highlight on the Log Stimulant list uses your current in-system level rather than the projected peak to determine whether a dose would exceed your Oops threshold. Running the full absorption-curve peak calculation for every visible profile on every screen draw exceeds the Garmin watch's CPU time limit and causes crashes. The Preview screen always runs the precise calculation — tap any profile to get the accurate answer before logging.
+
 ---
 
 ## Screens and Navigation
@@ -273,7 +275,9 @@ Below that, your saved profiles are listed in your configured sort order, each s
 **Warning colours on profile names:**
 - **White** — no threshold would be exceeded
 - **Orange** — this drink would push your today total over your daily limit
-- **Red** — this drink would push your in-system estimate over your Oops threshold (if set)
+- **Red** — this drink would push your current in-system level over your Oops threshold (if set)
+
+> **Note on the red warning:** The red indicator on the list screen uses a simplified check — it compares each profile's caffeine amount against the gap between your current in-system level and your Oops threshold. This is intentionally conservative: it does not account for your absorption curve, so it may flag drinks red that would not actually breach the threshold once absorption is factored in. **Tap the profile to see the Preview screen, which runs the full calculation** and gives you the precise projected peak, sleep threshold time, and an accurate warning. The simplified check exists because the full peak-finding calculation is too computationally expensive to run for every profile on every screen draw on the watch's hardware. A future Android companion app will handle this calculation on the phone and transmit the result to the watch, enabling precise per-profile warnings on the list screen.
 
 **Navigation from Log Stimulant:**
 | Action | Result |
@@ -537,7 +541,7 @@ Compatibility with other devices has not been tested.
 
 **Paraxanthine tracking** — Modelling the primary caffeine metabolite, which accounts for the 8–15 hour stimulant tail that pure caffeine tracking misses.
 
-**A companion Android app** — For richer history views, long-term trend analysis beyond the 30-day on-device window, data export, and a more convenient interface for managing profiles and settings.
+**A companion Android app** — For richer history views, long-term trend analysis beyond the 30-day on-device window, data export, and a more convenient interface for managing profiles and settings. The companion app will also take over computationally expensive calculations that exceed the watch CPU's limits — most notably, computing precise per-profile Oops threshold warnings for the Log Stimulant list. The phone will run the full absorption-curve peak calculation for each profile, then transmit the results to the watch as a simple lookup table, enabling accurate warnings without any heavy math on the watch side.
 
 ---
 

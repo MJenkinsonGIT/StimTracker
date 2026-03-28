@@ -31,13 +31,15 @@ class StimTrackerStorage {
     // Default stimulant profiles (Phase 1 — caffeine only)
     // Each profile: { "id" => Number, "name" => String, "caffeineMg" => Number }
     static const DEFAULT_PROFILES = [
-        { "id" => 1, "name" => "Reign Red Dragon",          "caffeineMg" => 300 },
-        { "id" => 2, "name" => "G Fuel Blue Ice",           "caffeineMg" => 150 },
-        { "id" => 3, "name" => "GV Energy Cherry Slush",    "caffeineMg" => 120 },
-        { "id" => 4, "name" => "Nutricost Caff+Theanine",   "caffeineMg" => 200 },
-        { "id" => 5, "name" => "Nutricost Energy Complex",  "caffeineMg" => 100 },
-        { "id" => 6, "name" => "Nutricost Clean Energy",    "caffeineMg" => 100 },
-        { "id" => 7, "name" => "Nutricost Intra-Workout",   "caffeineMg" => 100 }
+        { "id" => 1, "name" => "Reign Red Dragon",          "caffeineMg" => 300, "type" => "drink" },
+        { "id" => 2, "name" => "G Fuel Blue Ice",           "caffeineMg" => 150, "type" => "drink" },
+        { "id" => 3, "name" => "GV Energy Cherry Slush",    "caffeineMg" => 120, "type" => "drink" },
+        { "id" => 4, "name" => "Nutricost Caff+Theanine",   "caffeineMg" => 200, "type" => "pill"  },
+        { "id" => 5, "name" => "Nutricost Energy Complex",  "caffeineMg" => 100, "type" => "pill"  },
+        { "id" => 6, "name" => "Nutricost Clean Energy",    "caffeineMg" => 100, "type" => "drink" },
+        { "id" => 7, "name" => "Nutricost Intra-Workout",   "caffeineMg" => 100, "type" => "drink" },
+        { "id" => 8, "name" => "GV Peach Mango GT",         "caffeineMg" => 55,  "type" => "drink" },
+        { "id" => 9, "name" => "CL Peach Mango GT",         "caffeineMg" => 15,  "type" => "drink" }
     ] as Array<Dictionary>;
 
     // ── Settings ───────────────────────────────────────────────────────────
@@ -110,7 +112,7 @@ class StimTrackerStorage {
             "sleepThresholdMg"  => 100,
             "bedtimeMinutes"    => bedtimeMinutes,
             "oopsThresholdMg"   => null,
-            "nextProfileId"     => 8,   // first user-created profile gets ID 8
+            "nextProfileId"     => 10,  // first user-created profile gets ID 10
             "absorptionModel"      => 0,   // 0=Instant, 1=Standard, 2=Precision
             "standardFoodState"   => 1,   // 0=Fasted, 1=Typical, 2=WithFood (Standard sub-setting)
             "drinkTimeEstimateMin" => 30  // Assumed drink window when finish time is unknown
@@ -402,6 +404,7 @@ class StimTrackerStorage {
             pType, pFoodState
         );
         clearPendingDose();
+        refreshSleepCache();  // pending dose is now cleared — cache can be computed correctly
     }
 
     // Discard any pending dose (e.g. user cancelled).
@@ -756,22 +759,17 @@ class StimTrackerStorage {
         return (sleepSec - nowSec) / 60;
     }
 
-    // Recomputes the sleep-safe timestamp and stores it in Application.Storage.
-    // Called whenever dose data or relevant settings change. Loads settings
-    // internally so callers don't need to pass them.
-    // During an active recording, the projected finish drifts over time so we
-    // do NOT cache — calcSleepSafeSec will recompute live in that case only.
+    // Invalidates the sleep-safe cache without running any computation.
+    // Called from mutation points (log, delete, settings save, finish recording)
+    // so the cache is marked stale immediately. The actual bisection computation
+    // runs lazily on the next onUpdate() call via the cache-miss path in
+    // calcSleepSafeSec — safely away from tap handlers where the watchdog fires.
     static function refreshSleepCache() as Void {
-        // Invalidate the in-memory recording-mode cache on any mutation.
+        // Reset the in-memory recording-mode TTL so it recomputes next frame.
         _recSleepCacheSec = 0;
-        var pending = loadPendingDose();
-        if (pending != null) {
-            // Don't update persistent cache while recording — value is time-dependent.
-            return;
-        }
-        var settings = loadSettings();
-        var result   = _computeSleepSafeSec(settings);
-        Application.Storage.setValue("sleep_safe_cache", result);
+        // Delete the persistent cache key. calcSleepSafeSec will recompute
+        // and re-store it on the next call (from onUpdate, not a tap handler).
+        Application.Storage.deleteValue("sleep_safe_cache");
     }
 
     // Returns absolute Unix timestamp when system will drop below sleepThresholdMg.
@@ -855,31 +853,30 @@ class StimTrackerStorage {
                          absModel, doseType, foodState);
     }
 
-    // Bisection peak-finder. Locates the time at which the combined curve
-    // (all logged doses + optional extra synthetic dose) reaches its maximum.
-    //
-    // Algorithm: if the curve is already falling at nowSec, the peak is now.
-    // Otherwise, exponential-search for an upper bound where the curve is falling,
-    // then bisect between lo (rising) and hi (falling) for 20 iterations.
-    // Precision: ~0.17s over a 180000s window — far more than enough.
-    //
-    // hasExtra: include a synthetic dose (e.g. pending recording or preview).
-    //
-    // Performance: loads all events from Storage ONCE at the top, then passes
-    // the pre-loaded array through all _mgForBisect calls (typically 50–100).
-    // This replaces ~1,500–3,100 Storage reads with ~31.
+    // Bisection peak-finder — public entry point. Loads events then delegates.
     static function _findPeak(settings as Dictionary, nowSec as Number,
                                        hasExtra as Boolean, eStart as Number, eFinish as Number,
                                        eCaffMg as Float, eModel as Number,
                                        eDoseType as String, eFoodState as Number) as Array {
+        var events = _loadAllEvents();
+        return _findPeakFromEvents(events, settings, nowSec, hasExtra,
+                                   eStart, eFinish, eCaffMg, eModel, eDoseType, eFoodState);
+    }
+
+    // Inner peak-finder. Accepts pre-loaded events so callers that need to run
+    // many peak evaluations (e.g. dose-threshold bisection) can load Storage once.
+    // Algorithm: exponential-search for upper bound where curve is falling,
+    // then bisect between lo (rising) and hi (falling) for 20 iterations.
+    // Precision: ~0.17s over a 180000s window.
+    static function _findPeakFromEvents(events as Array, settings as Dictionary, nowSec as Number,
+                                        hasExtra as Boolean, eStart as Number, eFinish as Number,
+                                        eCaffMg as Float, eModel as Number,
+                                        eDoseType as String, eFoodState as Number) as Array {
         var halfLifeHrs       = settings["halfLifeHrs"] as Float;
         var absorptionModel   = settings.hasKey("absorptionModel")   ? settings["absorptionModel"]   as Number : 0;
         var standardFoodState = settings.hasKey("standardFoodState") ? settings["standardFoodState"] as Number : 1;
         var ln2 = Math.log(2.0, Math.E).toFloat();
         var ke  = ln2 / halfLifeHrs;
-
-        // Pre-load all events from Storage ONCE for the entire bisection.
-        var events = _loadAllEvents();
 
         // Pre-compute ka for extra dose (only used in PK mode)
         var eKa = 0.0f;
@@ -915,7 +912,7 @@ class StimTrackerStorage {
 
         // Bisect: loSec is always rising, hiSec is always falling
         var loSec = nowSec;
-        for (var i = 0; i < 20; i++) {
+        for (var i = 0; i < 10; i++) {
             var midSec  = loSec + (hiSec - loSec) / 2;  // safe midpoint
             var mgMid   = _mgForBisect(events, midSec,      halfLifeHrs, absorptionModel, standardFoodState, ke, ln2, hasExtra, eStart, eFinish, eCaffMg, eModel, eKa);
             var mgMid60 = _mgForBisect(events, midSec + 60, halfLifeHrs, absorptionModel, standardFoodState, ke, ln2, hasExtra, eStart, eFinish, eCaffMg, eModel, eKa);
@@ -925,6 +922,19 @@ class StimTrackerStorage {
         var peakSec = loSec + (hiSec - loSec) / 2;  // safe midpoint avoids integer overflow
         var peakMg  = _mgForBisect(events, peakSec, halfLifeHrs, absorptionModel, standardFoodState, ke, ln2, hasExtra, eStart, eFinish, eCaffMg, eModel, eKa);
         return [peakMg, peakSec] as Array;
+    }
+
+    // Returns the oops dose threshold for the Log Stimulant list.
+    // Conservative approximation: any profile whose caffMg would push the
+    // current in-system level over the oops threshold is flagged red.
+    // Uses current mg (not peak) — intentionally conservative, and fast.
+    // The Preview screen provides the accurate peak-based answer when tapped.
+    // Returns 9999.0f if no oops threshold is set (nothing flagged red).
+    static function calcOopsCurrentThreshold(settings as Dictionary) as Float {
+        var oopsMg = settings["oopsThresholdMg"];
+        if (oopsMg == null) { return 9999.0f; }
+        var currentMg = calcCurrentMg(settings);
+        return (oopsMg as Float) - currentMg;
     }
 
     // Combined mg at asOfSec: all logged doses (from pre-loaded events)

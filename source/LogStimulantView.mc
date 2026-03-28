@@ -23,15 +23,21 @@ class LogStimulantView extends WatchUi.View {
     var _profiles    as Array<Dictionary>;
     var _settings    as Dictionary;
     var _scrollPos   as Number;
+    var _rowColors   as Array<Number> or Null;  // cached per-profile colors — null = needs recompute
 
     function initialize(profiles as Array<Dictionary>, settings as Dictionary) {
         View.initialize();
         _profiles  = profiles;
         _settings  = settings;
         _scrollPos = 0;
+        _rowColors = null;  // computed lazily on first onUpdate(), not in the swipe handler
     }
 
     function onUpdate(dc as Graphics.Dc) as Void {
+        // Compute row colors lazily here rather than in initialize() or refreshProfiles(),
+        // which run inside tap/swipe handlers where the watchdog fires.
+        if (_rowColors == null) { _rowColors = _computeRowColors(); }
+
         dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
         dc.clear();
 
@@ -60,27 +66,12 @@ class LogStimulantView extends WatchUi.View {
                     Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
             } else if (rowIdx <= _profiles.size()) {
-                var p         = _profiles[rowIdx - 1] as Dictionary;
-                var name      = p["name"] as String;
-                var caffMg    = p["caffeineMg"] as Number;
-                var oopsMg    = _settings["oopsThresholdMg"];
-                var limitMg   = _settings["limitMg"] as Number;
-                var todayMg   = StimTrackerStorage.calcTodayTotalMg();
+                var p      = _profiles[rowIdx - 1] as Dictionary;
+                var name   = p["name"] as String;
+                var caffMg = p["caffeineMg"] as Number;
 
-                var wouldExceedLimit = (todayMg + caffMg) > limitMg;
-                var wouldExceedOops  = false;
-                if (oopsMg != null) {
-                    var dType = p.hasKey("type") ? p["type"] as String : "drink";
-                    var absM  = _settings.hasKey("absorptionModel") ? _settings["absorptionModel"] as Number : 0;
-                    var fs    = (absM == 1 && _settings.hasKey("standardFoodState"))
-                        ? _settings["standardFoodState"] as Number : 1;
-                    var peakI = StimTrackerStorage.previewPeakInfo(caffMg, dType, fs, _settings);
-                    wouldExceedOops = (peakI[0] as Float) > (oopsMg as Float);
-                }
-
-                var rowColor = Graphics.COLOR_WHITE;
-                if (wouldExceedOops)       { rowColor = Graphics.COLOR_RED; }
-                else if (wouldExceedLimit) { rowColor = Graphics.COLOR_ORANGE; }
+                // Row color is pre-computed in _computeRowColors() — no heavy calc per frame.
+                var rowColor = _rowColors[rowIdx - 1] as Number;
 
                 dc.setColor(rowColor, Graphics.COLOR_TRANSPARENT);
                 dc.drawText(CX, y + 20, Graphics.FONT_XTINY, name,
@@ -143,11 +134,39 @@ class LogStimulantView extends WatchUi.View {
     }
 
     function refreshProfiles(profiles as Array<Dictionary>) as Void {
-        _profiles = profiles;
+        _profiles  = profiles;
+        _rowColors = null;  // invalidate — onUpdate() will recompute lazily
         var maxScroll = 1 + _profiles.size() + 1 - ROWS_VIS;
         if (maxScroll < 0) { maxScroll = 0; }
         if (_scrollPos > maxScroll) { _scrollPos = maxScroll; }
         WatchUi.requestUpdate();
+    }
+
+    // Computes the display color for every profile row.
+    // Calls calcOopsDoseThresholds() once to get drink/pill thresholds, then
+    // each profile is a single comparison — no per-profile bisection.
+    function _computeRowColors() as Array<Number> {
+        var colors  = [] as Array<Number>;
+        var limitMg = _settings["limitMg"] as Number;
+        var todayMg = StimTrackerStorage.calcTodayTotalMg();
+
+        // Single cheap threshold: oopsMg - currentMg. Any profile whose caffMg
+        // meets or exceeds this would push current level over the oops threshold.
+        // Conservative (uses current mg, not peak) — Preview screen has the accurate answer.
+        var oopsThreshMg = StimTrackerStorage.calcOopsCurrentThreshold(_settings);
+
+        for (var i = 0; i < _profiles.size(); i++) {
+            var p      = _profiles[i] as Dictionary;
+            var caffMg = p["caffeineMg"] as Number;
+
+            var wouldExceedLimit = (todayMg + caffMg) > limitMg;
+            var wouldExceedOops = caffMg.toFloat() >= oopsThreshMg;
+
+            if (wouldExceedOops)       { colors.add(Graphics.COLOR_RED); }
+            else if (wouldExceedLimit) { colors.add(Graphics.COLOR_ORANGE); }
+            else                       { colors.add(Graphics.COLOR_WHITE); }
+        }
+        return colors;
     }
 }
 

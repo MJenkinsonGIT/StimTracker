@@ -193,14 +193,14 @@ class PreviewView extends WatchUi.View {
     function setTimings(startSec as Number, finishSec as Number) as Void {
         _startSec  = startSec;
         _finishSec = finishSec;
-        _recomputePeakInfo();  // inputs changed — recompute
+        _peakInfo  = null;  // invalidate — onUpdate() will recompute (not a tap handler)
         WatchUi.requestUpdate();
     }
 
     // Update per-dose food state (called by AdjustTimeDelegate).
     function setFoodState(fs as Number) as Void {
         _foodState = fs;
-        _recomputePeakInfo();  // inputs changed — recompute
+        _peakInfo  = null;  // invalidate — onUpdate() will recompute (not a tap handler)
     }
 
     // Format a Unix timestamp as "H:MMam/pm" in local time
